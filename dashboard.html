@@ -1,0 +1,5 @@
+{% extends "base.html" %}{% block title %}Панель{% endblock %}{% block content %}
+<h1 class="mb-4">Операционная панель</h1><div class="row g-3 mb-4">
+{% for title,val in [('Номеров',rooms),('Свободно',available),('Заездов сегодня',arrivals),('Выездов сегодня',departures),('Оплачено',('%.2f'|format(revenue)) ~ ' ₽')] %}
+<div class="col-md"><div class="stat card p-3"><div class="text-secondary">{{title}}</div><div class="display-6 fw-bold">{{val}}</div></div></div>{% endfor %}</div>
+<div class="card p-3"><h4>Последние бронирования</h4><div class="table-responsive"><table class="table align-middle"><tr><th>Код</th><th>Гость</th><th>Номер</th><th>Даты</th><th>Статус</th><th>Сумма</th></tr>{% for b in recent %}<tr><td>{{b.code}}</td><td>{{b.guest.first_name}} {{b.guest.last_name}}</td><td>{{b.room.number}}</td><td>{{b.check_in}} — {{b.check_out}}</td><td><span class="badge bg-secondary">{{b.status}}</span></td><td>{{b.total}} ₽</td></tr>{% endfor %}</table></div></div>{% endblock %}
