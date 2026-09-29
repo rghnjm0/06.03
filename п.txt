@@ -1,6 +1,6 @@
-# Повторный аудит OWASP Top 10 (2025) — АИС «Уют»
+# Аудит OWASP Top 10 (2025) — АИС «Уют», третий проход
 
-Итог: с прошлого раза исправлены 4 находки (`rate-limit` теперь нормализует логин, `open redirect` блокирует `\`, `payment_webhook` возвращает 501, демо-оплата обёрнута в `BEGIN IMMEDIATE`). Ниже — полный список.
+Сравнение с прошлым аудитом: закрыты `admin_logout` (добавлен `@admin_required`), нормализация identifier при rate-limit, фильтр `\\` в `next`, `payment_webhook` → 501, гонка в `create_payment` (BEGIN IMMEDIATE + идемпотентность), добавлена CSP. Ниже — полная картина.
 
 ---
 
@@ -8,28 +8,22 @@
 
 **Нашел.**
 
-1. **`routes/admin.py` — `admin_logout` (строки с `@app.route('/admin/logout', methods=['POST'])`)**  
-   - Нет `@admin_required`.  
-   - **Вход:** POST `/admin/logout` с валидным CSRF-токеном, сделанный залогиненным гостем.  
-   - **Выход:** `session.clear()` — гость разлогинивается сам.  
-   - **Опасность:** низкая, но нарушает принцип «эндпоинты админ-зоны закрыты».
-
-2. **`routes/features.py` — `toggle_promocode`**  
+1. **`routes/features.py`, функция `room_reviews` (`/room/<id>/reviews`)**  
    ```python
-   conn=get_db(); conn.execute("UPDATE Промокоды SET ... WHERE ID=?",(promo_id,)); conn.commit(); conn.close()
-   return redirect(url_for('admin_promocodes'))
+   reviews=conn.execute("SELECT r.*,c.Имя,c.Фамилия FROM Отзывы r JOIN Клиенты c ...").fetchall()
    ```
-   - **Вход:** POST с валидным CSRF от админа.  
-   - **Выход:** `BuildError` (нет `admin_promocodes` в корне, есть только в blueprint `features`). Админ видит 500.  
-   - **Опасность:** низкая, но нарушает всю страницу промокодов.
+   - **Вход:** GET `/room/RM001/reviews` без авторизации.
+   - **Выход:** полные имена и фамилии гостей, оставивших отзывы.
+   - **Опасность:** средняя. Публичное раскрытие ПДн. В параллельном `routes/public.py::room_detail` это уже скрыто (`'Гость' AS Имя`), но здесь забыли — несогласованность.
 
-3. **`routes/public.py` — `room_detail` (`/room/<id>`)**  
-   Отдаёт имена гостей из отзывов: `SELECT r.*,c.Имя FROM Отзывы r JOIN Клиенты c ...`. Публичный эндпоинт.  
-   - **Вход:** GET `/room/RM001`.  
-   - **Выход:** имена и фамилии гостей, оставивших отзывы.  
-   - **Опасность:** раскрытие ПДн. Средняя.
+2. **`routes/admin.py`, `admin_logout`**  
+   Теперь с `@admin_required` — исправлено. Чисто.
 
-4. **`routes/features.py` — `export_guests` (`/admin/export/guests.csv`)** защищён `@admin_required` — чисто.
+3. **`routes/admin.py`, `admin_reports_export`, `admin_clients`, `admin_client_detail`, `admin_invoice_pay`** — все с `@admin_required`. Чисто.
+
+4. **`routes/features.py`, `toggle_promocode`, `admin_promocodes`, `export_guests`, `room_service_status`, `add_gallery`** — с `@admin_required`. `redirect(url_for('features.admin_promocodes'))` — исправлено. Чисто.
+
+**Что нельзя проверить:** права ОС на БД, наличие WAF/прокси, ограничения на сетевом уровне.
 
 ---
 
@@ -37,17 +31,20 @@
 
 **Нашел.**
 
-1. **`app.py` — `add_security_headers`**  
-   Заголовки `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `COOP`, `Permissions-Policy` есть, **`Content-Security-Policy` отсутствует**.  
-   - **Вход:** любая инъекция inline-скрипта (например, через будущий `flash` с категорией из внешних данных или inline-template).  
-   - **Выход:** CSP не блокирует.  
-   - **Опасность:** средняя. Любая XSS становится неограниченной.
+1. **`app.py`, `add_security_headers`** — CSP добавлена:
+   ```
+   script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net;
+   style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://fonts.googleapis.com;
+   img-src 'self' data: https:;
+   ```
+   - **`'unsafe-inline'` в `script-src`** практически обнуляет защиту от XSS: любая инъекция inline-скрипта исполнится.
+   - **`img-src https:`** разрешает загрузку картинок с любого HTTPS-хоста — позволяет эксфильтрацию через `<img src="https://attacker/...">` при наличии HTML-инъекции.
+   - **Опасность:** средняя. CSP есть, но ослаблена.
 
-2. **`db.py` — `DB_NAME = os.path.join(BASE_DIR, "hotel_management.db")`**  
-   Файл БД рядом с кодом. Проверить конфиг веб-сервера чтением кода нельзя, но это классический риск: при утечке статики через nginx/apache БД отдаётся целиком (пароли + ПДн).
+2. **`db.py`, `DB_NAME = os.path.join(BASE_DIR, "hotel_management.db")`**  
+   SQLite рядом с кодом. Проверить конфиг веб-сервера чтением кода нельзя, но это классический риск.
 
-3. **`templates/base.html` и `templates/admin/base_admin.html` — inline `<style>` в `booking.html`, `contact.html`, `room_detail.html`, `profile.html`**  
-   Затрудняет введение строгого CSP.
+3. **`templates/base.html`, `templates/admin/base_admin.html`** — `X-Frame-Options: SAMEORIGIN` стоит через `setdefault`, но `frame-ancestors 'self'` в CSP дублирует. OK.
 
 ---
 
@@ -55,18 +52,23 @@
 
 **Нашел.**
 
-1. **`templates/base.html` — строки 9, 11, 13**  
+1. **`templates/base.html`, строки подключения CDN**  
    ```html
    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-   <link href="https://fonts.googleapis.com/css2?family=Manrope..." rel="stylesheet">
+   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
    ```
    **Нет `integrity=` (SRI).**  
    - **Вход:** компрометация jsdelivr/cloudflare CDN.  
-   - **Выход:** подмена CSS/JS в браузерах всех гостей и админов.  
-   - **Опасность:** высокая. RCE на клиенте, кража сессий, keylogging.
+   - **Выход:** исполнение произвольного JS в браузерах всех гостей и админов.  
+   - **Опасность:** высокая. Кража сессий, keylogging, CSRF-цепочки.
 
-2. **`templates/admin/base_admin.html` — те же строки с `bootstrap@5.3.3` и FontAwesome**  
+2. **`templates/admin/base_admin.html`, строки подключения CDN**  
+   ```html
+   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
+   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+   ```
    Та же проблема.
 
 3. **`requirements.txt`**  
@@ -74,26 +76,26 @@
    Flask>=3.0,<4.0
    Pillow>=10.0,<12.0
    ```
-   Нет lock-файла, нет точных версий. Диапазон `Pillow >=10.0` содержит версии с CVE (CVE-2023-50447 в <10.2, CVE-2024-28219 и др.).  
-   - **Опасность:** средняя. Развёртывание может подтянуть уязвимую версию.
+   Нет lock-файла, нет точных версий.
 
-4. **`db.py` — `insert_test_data`, строки `print('DEV-ONLY credentials...')` и `print(f'Гость: ...')`**  
-   Пароли печатаются в stdout при первом запуске → попадают в логи CI/контейнера.
+4. **`db.py`, `insert_test_data`, строки**  
+   ```python
+   print('DEV-ONLY credentials (сохраните сейчас; повторно не показываются):')
+   print(f'Гость: {demo_guest_password} | Сотрудник: {demo_employee_password}')
+   ```
+   Пароли уходят в stdout → в логи CI/контейнера.
 
 ---
 
 ## A04 — Cryptographic Failures and Secrets
 
-**Проверил — в основном чисто.**
+**Нашел.**
 
-1. **`auth.py`** — `hash_password` использует `scrypt` через `werkzeug.security.generate_password_hash(method="scrypt")`. Политика: 12–256 символов. Чисто.
+1. **`auth.py`, `hash_password`, `validate_password`** — `scrypt`, политика 12–256 символов. Чисто.
 
-2. **`auth.py` — `password_matches`** — принимает только `scrypt:`, `pbkdf2:`, `argon2:`. Legacy-«сырые» пароли не принимаются. Чисто.
+2. **`auth.py`, `password_matches`** — принимает только `scrypt:`, `pbkdf2:`, `argon2:`. Legacy-пароли не принимаются. Чисто.
 
-3. **`app.py` — `SESSION_COOKIE_SECURE = is_production or os.environ.get("SESSION_COOKIE_SECURE", "0") == "1"`**  
-   В dev cookie едет по HTTP. Нормально для dev, но нет жёсткого запрета на prod без HTTPS.
-
-4. **`db.py` — `add_admin_user()`**  
+3. **`db.py`, `add_admin_user`**  
    ```python
    if not password:
        password = secrets.token_urlsafe(24)
@@ -101,10 +103,13 @@
        print(password)
    ```
    - **Вход:** отсутствие `UYUT_BOOTSTRAP_ADMIN_PASSWORD`.  
-   - **Выход:** пароль в stdout → в `docker logs`/CI.  
-   - **Опасность:** высокая, если пароль изначальный и остался в логах.
+   - **Выход:** пароль админа в stdout → `docker logs`, CI, journald.  
+   - **Опасность:** высокая, если не был сменён сразу и логи доступны кому-то ещё.
 
-**Что нельзя проверить чтением:** реальные значения `UYUT_SECRET_KEY`, `UYUT_BOOTSTRAP_ADMIN_PASSWORD`, `UYUT_DEMO_*`; наличие `.env` в репозитории; права на `hotel_management.db`.
+4. **`app.py`, `SESSION_COOKIE_SECURE = is_production or os.environ.get("SESSION_COOKIE_SECURE", "0") == "1"`**  
+   В dev cookie уходит по HTTP. Ожидаемо, но нет явного запрета на prod без HTTPS.
+
+**Что нельзя проверить:** реальные значения `UYUT_SECRET_KEY`, `UYUT_BOOTSTRAP_ADMIN_PASSWORD`, `UYUT_DEMO_*`, наличие `.env` в репозитории, права на файл БД.
 
 ---
 
@@ -112,20 +117,19 @@
 
 **Нашел.**
 
-1. **SQL — все запросы параметризованы.** Проверил `admin.py`, `auth.py`, `public.py`, `features.py`, `payments.py`, `utils.py`. `next_id` строит f-строку по белому списку таблиц/полей + regex на префикс — корректно.
+1. **SQL** — все запросы параметризованы в `admin.py`, `auth.py`, `public.py`, `features.py`, `payments.py`, `utils.py`. `next_id` строит f-строку по белому списку таблиц/полей + regex на префикс. Чисто.
 
-2. **`routes/auth.py` — строки вида `flash(str(e) if isinstance(e, ValueError) else '...', 'danger')`**  
-   `ValueError` от `datetime.strptime("abc", '%Y-%m-%d')` даёт `time data 'abc' does not match format '%Y-%m-%d'`.  
-   - **Вход:** POST `/booking/BRxxx` с `check_in=abc`.  
-   - **Выход:** гостю показывается Python-текст исключения.  
-   - **Опасность:** низкая. Утечка деталей + удобно для fuzzing.
+2. **`routes/auth.py`, строки `flash(str(e) if isinstance(e, ValueError) else '...', 'danger')`**  
+   `strptime("abc", '%Y-%m-%d')` даёт `time data 'abc' does not match format '%Y-%m-%d'`.  
+   - **Вход:** POST с `check_in=abc`.  
+   - **Выход:** Python-сообщение об исключении в UI.  
+   - **Опасность:** низкая. Утечка деталей + удобство для fuzzing.
 
-3. **`templates/booking.html`, `templates/rooms.html`, `templates/room_detail.html`**  
-   Inline `onerror="this.src='...'"`, `onclick="this.previousElementSibling.value=..."`, `onsubmit="return confirm('Удалить гостя {{ c.Фамилия }} {{ c.Имя }}?...')"` —  
-   **Последний случай:** в `templates/admin/clients.html` в `onsubmit` подставляется ФИО через Jinja. Jinja экранирует `'` в `&#39;`, поэтому **в HTML-атрибут подставить пробой нельзя**. Чисто.
+3. **`templates/admin/bookings.html`, `status-{{ b.Статус|replace(' ','-') }}`**  
+   Значение статуса идёт в `class=...`. Сейчас статус — из фиксированного множества, но если когда-нибудь появится пользовательский статус, получим инъекцию классов. Чисто, но хрупко.
 
-4. **`templates/admin/bookings.html` — `status-{{ b.Статус|replace(' ','-') }}`**  
-   Значение идёт в `class="..."` без проверки. Если кто-то когда-нибудь добавит статус с `"` или пробелами — превратится в инъекцию классов. Сейчас статусы фиксированы константой `STATUSES`. Чисто, но хрупко.
+4. **`templates/admin/clients.html`, `onsubmit="return confirm('Удалить гостя {{ c.Фамилия }} {{ c.Имя }}?...')"`**  
+   Jinja2 экранирует `'` в `&#39;`, поэтому пробой невозможен. Чисто.
 
 5. **Command injection** — `subprocess`, `os.system`, `eval`, `exec`, `pickle.loads` не используются. Чисто.
 
@@ -135,23 +139,22 @@
 
 **Нашел.**
 
-1. **`routes/payments.py` — гонка закрыта**: `BEGIN IMMEDIATE`, повторный `SELECT 1 FROM Платежи WHERE ... Статус='succeeded'`, `UPDATE ... WHERE Оплачено=0` (через проверку до). Хорошо.
-
-2. **`routes/auth.py` — rate-limit больше не обходится форматами телефона** (identifier нормализуется). Хорошо.
-
-3. **Жёсткая привязка админ-логина к строке `admin`** осталась:  
+1. **`routes/auth.py`, `login`**  
    ```python
    if login_value.lower() == 'admin':
-       ... WHERE u.Роль = 'admin' LIMIT 1
+       cursor.execute("... WHERE u.Роль = 'admin' LIMIT 1")
    ```
-   - **Вход:** второй админ с логином `admin2` в таблице `Пользователи`.  
-   - **Выход:** войти он сможет только по телефону через fallback-запрос.  
-   - **Опасность:** низкая (доступности), но плохо масштабируется.
+   Второй админ (`admin2`) не сможет войти по логину — только по телефону через fallback. Низкая опасность, плохая масштабируемость.
 
-4. **`routes/admin.py` — `admin_booking_add`** — все проверки дат корректны, но `admin_booking_update` не запрещает перевод `Завершено → Подтверждено`.  
-   - **Вход:** POST `status=Подтверждено` на завершённую бронь.  
-   - **Выход:** статус меняется без конфликт-чека.  
-   - **Опасность:** низкая (админ сам).
+2. **`routes/admin.py`, `admin_booking_update`**  
+   Нет ограничения переходов статуса. Из `Завершено` можно вернуть в `Подтверждено`, если дата заезда в будущем (проверка `if new_status in ACTIVE and _date(...) < today` пропустит, если дата в будущем). Edge case.
+
+3. **`routes/payments.py`, `create_payment`** — гонка закрыта (`BEGIN IMMEDIATE` + проверка существующего платежа). Хорошо.
+
+4. **`routes/auth.py`, `create_booking`** — повторная проверка конфликта внутри `BEGIN IMMEDIATE`, промокод пересчитывается. Хорошо.
+
+5. **`templates/register.html`, `minlength="6"` для пароля**  
+   Клиент разрешает 6, сервер требует 12. Не security, но UX + несогласованность.
 
 ---
 
@@ -159,18 +162,22 @@
 
 **Нашел.**
 
-1. **`routes/auth.py` — Rate-limit теперь нормализует identifier**, но **остаётся привязка к IP**: `client_ip = request.remote_addr or 'unknown'`.  
-   - **Вход:** атака через прокси/ботнет с 5 разных IP.  
-   - **Выход:** обход блокировки.  
-   - **Опасность:** средняя. По умолчанию Flask берёт `remote_addr`, за прокси это адрес прокси → все пользователи за одним прокси делят счётчик.
+1. **`routes/auth.py`, `login`**  
+   Rate-limit нормализует identifier. **Однако:**
+   ```python
+   client_ip = request.remote_addr or 'unknown'
+   ```
+   За прокси `remote_addr` — это адрес прокси. Все пользователи за одним прокси делят счётчик. Нужен `X-Forwarded-For` (с доверенным прокси) или identifier-only rate-limit.  
+   - **Опасность:** средняя. Ложные срабатывания при легитимной нагрузке или обход с ротацией IP.
 
-2. **`app.py` — нет ротации CSRF-токена между сессиями.**  
-   Токен живёт в сессии, пересоздаётся только при `session.clear()` (login/logout).  
-   - **Опасность:** низкая при HttpOnly+SameSite=Lax, но при XSS даёт полный контроль.
+2. **`app.py`, CSRF-токен живёт в сессии без ротации.**  
+   - **Вход:** XSS на странице.  
+   - **Выход:** токен доступен через `window.UYUT_CSRF`.  
+   - **Опасность:** низкая при HttpOnly+SameSite=Lax, но при XSS — полный контроль.
 
-3. **`app.py` — `PERMANENT_SESSION_LIFETIME = 60 * 60 * 8`, нет idle-таймаута.** Сессия живёт 8 часов, даже если пользователь ушёл.
+3. **`app.py`, `PERMANENT_SESSION_LIFETIME = 60 * 60 * 8`, нет idle-таймаута.** Сессия живёт 8 часов, даже если пользователь ушёл.
 
-4. **`routes/auth.py` — все успешные и неуспешные входы не пишутся в `Журнал_действий`** (см. A09).
+4. **`routes/auth.py`, `login` — успешные/неуспешные входы не пишутся в `Журнал_действий`** (см. A09).
 
 **Что нельзя проверить:** реальный HTTPS-контур, HSTS-предзагрузку, ротацию `UYUT_SECRET_KEY`.
 
@@ -180,14 +187,13 @@
 
 **Нашел.**
 
-1. **CDN без SRI** — дублирует A03.1/A03.2. Классическая A08.
+1. **CDN без SRI** — дублирует A03.1/A03.2.
 
-2. **`routes/payments.py` — `payment_webhook` теперь `return "Not Implemented", 501`.** Хорошо — мёртвая точка закрыта.
+2. **`routes/payments.py`, `payment_webhook`** — теперь `return "Not Implemented", 501`. Хорошо. Но **`app.py::csrf_protect` не исключает `payments.payment_webhook`**, то есть если бы он был активирован, внешние вызовы не смогли бы пройти CSRF. Архитектурная проблема на будущее.
 
-3. **`db.py` — SQLite не подписан**, `PRAGMA integrity_check` не вызывается, хэшей контрольных сумм нет. Компромисс ФС = компромисс БД.  
-   - **Опасность:** средняя в классическом деплое.
+3. **`db.py`** — SQLite без `PRAGMA integrity_check`, без подписи, без WAL. Компромисс ФС = компромисс БД.
 
-4. **`hotel_logic.py` — `ensure_extended_schema` делает `INSERT OR IGNORE ... INTO Номера` при каждом старте.** Идемпотентно, но мутация данных в рантайме. Low.
+4. **`hotel_logic.py`, `ensure_extended_schema`** делает `INSERT OR IGNORE` в `Номера` при каждом старте. Идемпотентно, но мутация данных в рантайме.
 
 ---
 
@@ -195,19 +201,17 @@
 
 **Нашел.**
 
-1. **`Журнал_действий` не покрывает:**
-   - Создание гостя (`admin_client_add`) — **нет `log_action`**.
-   - Правка ПДн/пароля гостя (`admin_client_edit`) — **нет**.
-   - Смена пароля гостем (`features.change_password`) — **нет**.
-   - Создание/переключение промокода — **нет**.
-   - Загрузка фото в галерею (`add_gallery`) — **нет**.
-   - Успешный/неуспешный вход и выход — **нет** (входы падают только в `Попытки_входа`, не в общий журнал).
-   - Демо-оплата — **есть** `log_action("Оплата получена", ...)`. ОК.
+1. **`Журнал_действий` всё ещё не покрывает:**
+   - Создание гостя (`admin_client_add`) — нет `log_action`.
+   - Правка ПДн/пароля гостя (`admin_client_edit`) — нет.
+   - Смена пароля гостем (`features.change_password`) — нет.
+   - Создание/переключение промокода (`features.admin_promocodes`, `toggle_promocode`) — нет.
+   - Загрузка фото в галерею (`features.add_gallery`) — нет.
+   - Успешный/неуспешный вход, выход — нет (только `Попытки_входа`).
+   - `admin_room_add` — нет (в отличие от edit/delete, где логи есть).
+   - `admin_client_delete` — нет.
 
-2. **`routes/auth.py` — при 5 неудачах только `flash`,** ни `current_app.logger.warning`, ни `log_action`.  
-   - **Вход:** подбор пароля.  
-   - **Выход:** атака видна только в `Попытки_входа`, не в общем журнале и не в stdout.  
-   - **Опасность:** низкая по эффекту, средняя по detectability.
+2. **`routes/auth.py`, при 5 неудачах только `flash`,** ни `logger.warning`, ни `log_action`. Атака видна только в `Попытки_входа`.
 
 ---
 
@@ -215,16 +219,16 @@
 
 **Нашел.**
 
-1. **`routes/auth.py` — `flash(str(e) if isinstance(e, ValueError) else '...')`.**  
-   `ValueError` от `strptime` содержит текст исключения → утечка деталей в UI. Низкая.
+1. **`routes/auth.py`, `flash(str(e) ...)`** — Python-сообщения исключений в UI. Низкая опасность, но информативно для атакующего.
 
-2. **`routes/auth.py` — `create_booking`** — `except Exception as e: conn.rollback()` без проверки `conn.in_transaction`. В sqlite3 при уже закрытой транзакции падения нет, но лучше защищаться.
+2. **`routes/auth.py`, `create_booking`, `conn.rollback()` в `except` без проверки `conn.in_transaction`.**  
+   В sqlite3 при уже закрытой транзакции падения нет, но лучше защищаться `if conn.in_transaction: conn.rollback()`.
 
-3. **`payments.py` — `except Exception: conn.rollback()`** — стиль сохранён, но не логирует `e` явно (только `logger.exception`).
+3. **`payments.py`, `except Exception:` — не логирует `e` явно, только `logger.exception`.** OK.
 
-4. **DoS-вектор:** `utils.next_id` линейно сканирует таблицу (`SELECT field FROM table WHERE field LIKE 'prefix%'`). При большом N и частых POST — деградация. Не security, но эксплуатационно.
+4. **`routes/features.py`, `add_gallery`** — размер картинки проверяется (`<=5000x5000`), тип — через `PIL.Image`. Хорошо. Но `caption` обрезается до 200 символов уже **после** приёма — до обрезки в память может попасть длинная строка. Низкая.
 
-**Что нельзя проверить:** поведение SQLite под нагрузкой, срабатывание watchdog, таймауты БД.
+5. **DoS-вектор:** `utils.next_id` линейно сканирует таблицу по `LIKE 'prefix%'`. При больших N и частых POST — деградация. Не security, но эксплуатационно.
 
 ---
 
@@ -232,36 +236,36 @@
 
 **Нашел.**
 
-1. **Два `login.html`:** один — заглушка (`templates/login.html`), второй — реальный (`templates/login.html` переопределён, но реальный контент лежит в одноимённом файле; в присланных файлах их два с одинаковым именем и разным содержимым — Flask подхватит один, второй мёртв). Нужно удалить лишний.
+1. **Два `login.html`:** один — заглушка (в `templates/login.html` из блока `login.html` в присланных файлах), реальный контент — тоже в `templates/login.html`, но с полным содержимым. Flask подхватит один, второй мёртв. Нужно удалить лишний.
 
-2. **`auth.py` (корневой) `password_matches`** — комментарий про миграцию legacy-паролей, но самой миграции нет. Мёртвый код, но безвредный.
+2. **`auth.py` (корневой) `password_matches`** — комментарий про миграцию legacy-паролей, самой миграции нет. Мёртвый код, но безвредный.
 
-3. **Два `auth.py`** — корневой (проверки доступа) и `routes/auth.py` (регистрация/вход). Имя вводит в заблуждение, лучше `routes/guest.py` или `routes/session.py`.
+3. **Два `auth.py`:** корневой (проверки доступа) и `routes/auth.py` (регистрация/вход). Имя вводит в заблуждение — лучше `routes/guest.py` или `routes/session.py`.
 
-4. **`routes/public.py`** — заканчивается комментарием `# ============= АДМИН-ПАНЕЛЬ =============`, но админских роутов внутри нет. Устаревший комментарий.
+4. **`routes/public.py`** — заканчивается `# ============= ПУБЛИЧНЫЕ МАРШРУТЫ =============` (исправлено с «АДМИН-ПАНЕЛЬ»). ОК, но сам файл сохранил странный стиль с двойными переводами строк и не имеет `if __name__`-структуры.
 
-5. **`hotel_logic.py`** совмещает миграции (`ensure_extra_rooms`, `ensure_extended_schema`), бизнес-логику услуг (`service_total`) и аудит (`log_action`). Лучше разделить: `migrations.py`, `services.py`, `audit.py`.
+5. **`hotel_logic.py`** совмещает миграции, бизнес-логику услуг и аудит. Лучше разнести: `migrations.py`, `services.py`, `audit.py`.
 
 ---
 
 ## Разбиение модулей на под-файлы
 
-- **Python:** логика разнесена по `routes/*`. OK. Но `hotel_logic.py` перегружен (см. выше).
+- **Python:** логика разнесена по `routes/*`. OK. `hotel_logic.py` перегружен.
 - **HTML:** шаблоны в `templates/` и `templates/admin/`. OK.
-- **CSS:** `style.css` и `admin.css` — OK, но `style.css` ~950 строк, тянет на разделение.
-- **JS:** `base.html` содержит авто-вставку CSRF-токена (inline). Против строгого CSP. Стоит вынести в `static/js/csrf.js`.
-- **Inline CSS/JS в шаблонах:** `booking.html`, `contact.html`, `room_detail.html`, `profile.html` — большие `<style>` блоки. Мешает CSP.
+- **CSS:** `style.css` (~950 строк) и `admin.css` (~200 строк). Тянет на разделение.
+- **JS:** `base.html` содержит авто-вставку CSRF и UI-скрипты **инлайн**, что требует `'unsafe-inline'` в CSP. Стоит вынести в `static/js/*.js` с nonce/hash и убрать `'unsafe-inline'`.
+- **Inline CSS/JS в шаблонах:** `booking.html`, `contact.html`, `room_detail.html`, `profile.html` — большие `<style>` блоки. Мешает строгому CSP.
 
 ---
 
 ## Что нельзя проверить чтением кода
 
 - Реальные значения секретов (`UYUT_SECRET_KEY`, `UYUT_BOOTSTRAP_ADMIN_PASSWORD`, `UYUT_DEMO_*`) и наличие `.env` в репозитории.
-- Права ФС на `hotel_management.db` и папку `static/images/rooms/`.
+- Права ФС на `hotel_management.db` и `static/images/rooms/`.
 - Версии Flask/Pillow, реально установленные на боевом сервере.
-- Настройки reverse-proxy (HTTPS, HSTS, WAF, размер запроса).
-- Реальное поведение `\` в `next` в браузерах (проверено на уровне кода — фильтр `'\\' not in next_page` есть, но нужен живой тест).
-- Куда пишутся `current_app.logger.*` — централизованно или в stderr.
+- Настройки reverse-proxy (HTTPS, HSTS, WAF, `X-Forwarded-For`, размер запроса).
+- Поведение CSP в конкретных браузерах (поддерживается ли `frame-ancestors`, работает ли nonce).
+- Куда именно идут `current_app.logger.*` — в stdout, journald, Sentry.
 - Наличие `.env` в `.gitignore`.
 - Поведение SQLite под нагрузкой и наличие WAL.
 
@@ -272,18 +276,18 @@
 | # | Категория | Находка | Приоритет |
 |---|-----------|---------|-----------|
 | 1 | A03/A08 | Нет SRI для CDN в `base.html` и `base_admin.html` | Высокий |
-| 2 | A04 | Пароль админа печатается в stdout (`db.py::add_admin_user`) | Высокий |
-| 3 | A02 | Нет `Content-Security-Policy` | Средний |
-| 4 | A09 | Журнал не покрывает входы, создание/правку гостей, промокоды | Средний |
-| 5 | A07 | Rate-limit привязан к `request.remote_addr`, за прокси обходится | Средний |
-| 6 | A01 | `admin_logout` без `@admin_required` | Низкий |
-| 7 | A01 | `toggle_promocode` неверный endpoint в `redirect` | Низкий |
+| 2 | A04 | Пароль админа в stdout (`db.py::add_admin_user`) | Высокий |
+| 3 | A02 | CSP с `'unsafe-inline'` в `script-src` | Средний |
+| 4 | A09 | Журнал не покрывает входы, создание/правку гостей, промокоды, галерею | Средний |
+| 5 | A07 | Rate-limit привязан к `remote_addr`, за прокси обходится | Средний |
+| 6 | A01 | `/room/<id>/reviews` раскрывает ФИО гостей | Средний |
+| 7 | A03 | `requirements.txt` без lock-файла | Средний |
 | 8 | A05/A10 | Тексты исключений в `flash` | Низкий |
 | 9 | A02 | SQLite рядом с кодом | Средний (зависит от конфига) |
 | 10 | A06 | Жёсткая привязка админ-логина к строке `admin` | Низкий |
 
 ## Оценка
 
-**7.4 / 10** — четыре находки закрыты, но остаются «бюджетные»: CDN без SRI, пароль админа в stdout, отсутствие CSP, дыры в журналировании. Всё это правится за несколько часов без переделки архитектуры.
+**7.8 / 10** — закрыты 4 прошлые находки, добавлена CSP (хоть и ослабленная), починен open redirect и rate-limit. Остаются «бюджетные»: CDN без SRI, пароль админа в stdout, слабая CSP, дыры в журналировании и раскрытие ФИО в отзывах. Всё закрывается за несколько часов без переделки архитектуры.
 
-После закрытия пунктов 1–3 и 5 оценка поднимается до **8.7 / 10**.
+После закрытия пунктов 1–3 и 6 оценка поднимается до **9.0 / 10**.
