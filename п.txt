@@ -1,0 +1,336 @@
+# Повторный анализ — что ещё осталось
+
+В первом ответе я перечислил 11 проблем, из них 3 (№1, №2, №3) мы исправили. Ниже — **оставшиеся из списка** плюс **новые ошибки**, которые я нашёл при втором проходе по коду.
+
+---
+
+## 🔴 Новые критичные находки
+
+### №12. `routes/auth.py` → `register()` — генерация `ID_Клиента` через `COUNT(*)` даёт коллизии
+
+```python
+cursor.execute("SELECT COUNT(*) FROM Клиенты")
+count = cursor.fetchone()[0] + 1
+client_id = f"CL{count:03d}"
+```
+
+**Проблема:** если из таблицы когда-либо удалят хотя бы одну запись, `COUNT(*)` уменьшится, и новый ID совпадёт с уже существующим. `UNIQUE`-констрейнт отклонит вставку, транзакция откатится, а пользователь увидит «Не удалось завершить регистрацию».
+
+В `admin.py` для той же задачи уже есть правильный инструмент — `utils.next_id()`. Здесь его забыли применить.
+
+**Исправление:**
+```python
+from utils import next_id
+...
+client_id = next_id(conn, 'Клиенты', 'CL', 'ID_Клиента')
+```
+
+---
+
+### №13. `routes/auth.py` → `register()` — соединение закрывается без отката транзакции
+
+```python
+conn.execute('BEGIN IMMEDIATE')
+cursor.execute("SELECT ID_Клиента FROM Клиенты WHERE Телефон = ?", (phone,))
+if cursor.fetchone():
+    flash('Клиент с таким телефоном уже зарегистрирован', 'danger')
+    conn.close()      # ← транзакция BEGIN IMMEDIATE всё ещё открыта
+    return render_template('register.html')
+```
+
+SQLite при `close()` неявно откатывает транзакцию, поэтому порчи данных не будет, но это плохая практика: в пуле соединений или при переходе на другую СУБД приведёт к зависшим блокировкам. Также `except` не делает `conn.rollback()`.
+
+**Исправление:**
+```python
+if cursor.fetchone():
+    conn.rollback()
+    conn.close()
+    flash('Клиент с таким телефоном уже зарегистрирован', 'danger')
+    return render_template('register.html')
+```
+
+И в `except`:
+```python
+except Exception:
+    try: conn.rollback()
+    except Exception: pass
+    finally: conn.close()
+    ...
+```
+
+---
+
+### №14. `routes/payments.py` → `create_payment()` — можно оплатить отменённую бронь
+
+```python
+booking = conn.execute("""
+    SELECT b.*, n.Номер_Комнаты
+    FROM Бронирования b
+    JOIN Номера n ON n.ID_Номера=b.ID_Номера
+    WHERE b.ID_Бронирования=? AND b.ID_Клиента=?
+""", (booking_id, session.get("client_id"))).fetchone()
+```
+
+**Нет проверки `b.Статус NOT IN ('Отменено','Завершено')`.** Если гость откроет страницу подтверждения старой отменённой брони и нажмёт «Оплатить», платёж пройдёт, счёт пометится оплаченным, но бронь отменена. В финансовой отчётности появятся «оплаченные отменённые» брони.
+
+**Исправление:**
+```python
+booking = conn.execute("""
+    SELECT b.*, n.Номер_Комнаты
+    FROM Бронирования b
+    JOIN Номера n ON n.ID_Номера=b.ID_Номера
+    WHERE b.ID_Бронирования=? AND b.ID_Клиента=?
+      AND b.Статус NOT IN ('Отменено', 'Завершено')
+""", (booking_id, session.get("client_id"))).fetchone()
+```
+
+---
+
+### №15. `routes/admin.py` → `admin_invoice_pay()` — та же проблема
+
+```python
+conn.execute("UPDATE Счета SET Оплачено=1, Способ_оплаты=?, Дата_оплаты=date('now') WHERE ID_Бронирования=?", (method, booking_id))
+```
+
+Администратор может «оплатить» любую бронь, включая отменённую. Нужно сначала проверить статус:
+
+```python
+booking = conn.execute("SELECT Статус FROM Бронирования WHERE ID_Бронирования=?", (booking_id,)).fetchone()
+if not booking:
+    raise ValueError('Бронирование не найдено.')
+if booking['Статус'] == 'Отменено':
+    raise ValueError('Нельзя отметить оплату по отменённой брони.')
+```
+
+---
+
+### №16. `routes/admin.py` → `admin_booking_add()` — нет серверной валидации `client_id` и `room_id`
+
+```python
+client_id = request.form.get('client_id','')
+room_id = request.form.get('room_id','')
+...
+conn.execute("""INSERT INTO Бронирования(...) VALUES(?,?,?,...)""",
+    (booking_id, client_id, room_id, ...))
+```
+
+Проверяется только `room_id`:
+```python
+room = conn.execute('SELECT * FROM Номера WHERE ID_Номера=?',(room_id,)).fetchone()
+if not room: raise ValueError('Номер не найден.')
+```
+
+**`client_id` не проверяется вообще.** Если отправить POST напрямую с пустым `client_id`, SQLite выбросит `FOREIGN KEY constraint failed`, пользователь увидит «Внутренняя ошибка». Нужно:
+
+```python
+client = conn.execute('SELECT 1 FROM Клиенты WHERE ID_Клиента=?', (client_id,)).fetchone()
+if not client:
+    raise ValueError('Гость не найден.')
+```
+
+---
+
+## 🟠 Оставшиеся из первого анализа
+
+### №4. `routes/features.py` → `profile_edit()` — нет проверки уникальности телефона
+
+```python
+conn.execute("UPDATE Клиенты SET ... Телефон=? ... WHERE ID_Клиента=?", (..., phone, session['client_id']))
+conn.execute("UPDATE Пользователи SET Логин=? WHERE ID_Клиента=?", (phone, session['client_id']))
+```
+
+Свободный гость может занять телефон другого клиента — сработает `UNIQUE`, транзакция откатится, но пользователь получит общее «Внутренняя ошибка». В `admin_client_edit` такая проверка есть, здесь её нет.
+
+**Исправление:**
+```python
+duplicate = conn.execute(
+    "SELECT 1 FROM Клиенты WHERE Телефон=? AND ID_Клиента<>?",
+    (phone, session['client_id'])
+).fetchone()
+if duplicate:
+    raise ValueError('Этот телефон уже используется.')
+```
+
+---
+
+### №5. `routes/admin.py` → `admin_dashboard()` — «К оплате» может быть отрицательным
+
+```python
+revenue = ... WHERE b.Статус!='Отменено'
+paid    = ... без фильтра по статусу
+unpaid  = revenue - paid
+```
+
+Если оплаченный счёт относился к брони, которая позже была отменена, `paid > revenue`, и `unpaid` станет отрицательным. Карточка «К оплате» покажет бессмыслицу.
+
+**Исправление:**
+```python
+paid = conn.execute("""
+    SELECT COALESCE(SUM(s.Сумма_проживание),0)
+    FROM Счета s JOIN Бронирования b ON b.ID_Бронирования = s.ID_Бронирования
+    WHERE s.Оплачено=1 AND b.Статус != 'Отменено'
+""").fetchone()[0]
+```
+
+---
+
+### №6. `routes/features.py` — мёртвая функция `notify()`
+
+```python
+def notify(client_id, title, text):
+    ...
+```
+
+Нигде не вызывается. Уведомления в БД создаются, но ни одно событие (успешная бронь, оплата, отмена) их не генерирует — раздел «Уведомления» у гостя всегда пуст. Либо вызывайте `notify()`, либо удаляйте.
+
+---
+
+### №7. `templates/admin/base_admin.html` — двойная подсветка активного пункта
+
+```html
+<a class="nav-link {% if request.endpoint in ['admin_bookings','admin_calendar'] %}active{% endif %}" href="...">Бронирования</a>
+...
+<a class="nav-link {% if request.endpoint == 'admin_calendar' %}active{% endif %}" href="...">Календарь</a>
+```
+
+На странице календаря подсвечиваются **два** пункта меню. Уберите `'admin_calendar'` из первого условия.
+
+---
+
+### №8. `utils.py` → `sync_room_statuses()` — неявная зависимость от миграции
+
+```python
+conn.execute("UPDATE Номера SET Статус = 'Свободен' WHERE COALESCE(Статус_обслуживания,'') = ''")
+```
+
+Колонка `Статус_обслуживания` создаётся в `features.ensure_features_schema()`. Сейчас порядок в `app.py` корректный, но если кто-то вызовет `sync_room_statuses()` раньше (например, в CLI-скрипте), получит `OperationalError`. Стоит добавить проверку:
+
+```python
+cols = [r['name'] for r in conn.execute("PRAGMA table_info(Номера)").fetchall()]
+if 'Статус_обслуживания' in cols:
+    conn.execute("UPDATE Номера SET Статус='Свободен' WHERE COALESCE(Статус_обслуживания,'')=''")
+else:
+    conn.execute("UPDATE Номера SET Статус='Свободен'")
+```
+
+---
+
+### №9. `reset_access.py` — дублирование пароля в двух таблицах
+
+```python
+conn.execute("UPDATE Пользователи SET Пароль=? WHERE ID_Клиента=? AND Роль='admin'", ...)
+conn.execute("UPDATE Сотрудники SET Пароль=? WHERE Логин=(SELECT Логин FROM Пользователи WHERE ID_Клиента=? AND Роль='admin')", ...)
+```
+
+Авторизация идёт только по `Пользователи`. Второй `UPDATE` создаёт две точки правды для одного секрета — при рассинхроне поведение непредсказуемо. Достаточно первого.
+
+---
+
+### №10. `utils.py` → `get_room_image()` — fallback отдаёт случайное фото
+
+```python
+if available:
+    filename = available[sum(ord(ch) for ch in room_number_str) % len(available)]
+    return url_for("static", filename=f"images/rooms/{filename}")
+```
+
+Если у номера нет своего файла, ему «назначается» псевдослучайная картинка из пула. Для демо ок, но в реальной эксплуатации гость увидит чужой номер. Лучше отдавать `default.jpg`.
+
+---
+
+### №11. `templates/room_detail.html` — рейтинг всегда 5 звёзд
+
+```html
+<i class="fas fa-star text-warning"></i> ×5
+<span class="text-muted ms-1">{{ "%.1f"|format(avg_rating["avg"] or 0) }} ({{avg_rating["count"]}})</span>
+```
+
+Пять жёлтых звёзд захардкожены независимо от `avg_rating["avg"]`. Число рядом правильное, но визуал вводит в заблуждение. Нужно рендерить звёзды в цикле по округлённому среднему.
+
+---
+
+## 🟡 Мелкие замечания (из второго прохода)
+
+### №17. `routes/admin.py` → `admin_booking_update()` — можно реактивировать отменённую бронь задним числом
+
+```python
+if new_status in ACTIVE and booking_conflicts(...):
+    raise ValueError('Нельзя активировать бронь: даты пересекаются с другой активной бронью.')
+conn.execute('UPDATE Бронирования SET Статус=? WHERE ID_Бронирования=?',(new_status,booking_id))
+```
+
+Нет проверки, что `Дата_заезда >= today` при переходе из «Отменено» в «Подтверждено». После этого `sync_room_statuses()` пометит номер «Будет занят» из-за брони в прошлом.
+
+---
+
+### №18. `routes/features.py` → `export_guests()` — утечка соединения при исключении
+
+```python
+conn = get_db(); rows = conn.execute("SELECT ...").fetchall(); conn.close()
+```
+
+Если `execute()` бросит исключение, `close()` не выполнится. Оберните в `try/finally`.
+
+---
+
+### №19. `routes/admin.py` → `admin_room_add()` / `admin_room_edit()` — не валидируется `category`
+
+Шаблон предлагает фиксированный список, но сервер принимает любую строку. Мелкая дыра для мусорных данных:
+
+```python
+ALLOWED_CATEGORIES = {'Стандарт','Стандарт Плюс','Полулюкс','Люкс','Апартаменты','Премиум'}
+if category not in ALLOWED_CATEGORIES:
+    raise ValueError('Недопустимая категория номера.')
+```
+
+---
+
+### №20. `routes/admin.py` → `admin_dashboard()` — `total_clients` вычисляется, но не используется
+
+```python
+total_clients = conn.execute("SELECT COUNT(*) FROM Клиенты").fetchone()[0]
+```
+
+Передаётся в шаблон через `**locals()`, но `dashboard.html` его не использует. Мелочь, но лишний запрос на каждый рендер.
+
+---
+
+### №21. `utils.py` → `next_id()` — потенциальная гонка при отсутствии `BEGIN IMMEDIATE`
+
+```python
+rows = conn.execute(f"SELECT {field} FROM {table} WHERE {field} LIKE ?", ...).fetchall()
+...
+return f"{prefix}{max_number + 1:03d}"
+```
+
+Два параллельных запроса без `BEGIN IMMEDIATE` могут получить одинаковый ID. В `create_booking()` транзакция есть, но в `admin_client_add()` — нет. Оберните INSERT в `BEGIN IMMEDIATE` или используйте `AUTOINCREMENT`.
+
+---
+
+## Сводная таблица
+
+| # | Файл | Суть | Приоритет |
+|---|------|------|-----------|
+| 1 | `routes/features.py` | `url_for('admin_promocodes')` → `features.admin_promocodes` | ✅ исправлено |
+| 2 | `routes/auth.py` | Промокод на шаге confirm берётся из формы | ✅ исправлено |
+| 3 | `routes/auth.py` | В `profile()` сумма берётся из счёта | ✅ исправлено |
+| 12 | `routes/auth.py` | `register()`: `next_id` вместо `COUNT(*)` | 🔴 |
+| 13 | `routes/auth.py` | `register()`: rollback перед close | 🔴 |
+| 14 | `routes/payments.py` | Оплата отменённой брони | 🔴 |
+| 15 | `routes/admin.py` | Оплата отменённой брони админом | 🔴 |
+| 16 | `routes/admin.py` | Валидация `client_id` в `admin_booking_add` | 🔴 |
+| 4 | `routes/features.py` | Уникальность телефона в `profile_edit` | 🟠 |
+| 5 | `routes/admin.py` | Отрицательный «К оплате» | 🟠 |
+| 6 | `routes/features.py` | Мёртвая `notify()` | 🟡 |
+| 7 | `admin/base_admin.html` | Двойная подсветка | 🟡 |
+| 8 | `utils.py` | `sync_room_statuses` зависит от миграции | 🟡 |
+| 9 | `reset_access.py` | Дублирование пароля | 🟡 |
+| 10 | `utils.py` | Случайный fallback-фото | 🟡 |
+| 11 | `room_detail.html` | 5 звёзд всегда | 🟡 |
+| 17 | `routes/admin.py` | Реактивация отменённой брони задним числом | 🟡 |
+| 18 | `routes/features.py` | Утечка соединения в `export_guests` | 🟡 |
+| 19 | `routes/admin.py` | Валидация категории номера | 🟡 |
+| 20 | `routes/admin.py` | Неиспользуемый `total_clients` | ⚪ |
+| 21 | `utils.py` | Гонка в `next_id()` без `BEGIN IMMEDIATE` | ⚪ |
+
+Скажите, какие из них исправить следующими — и я дам готовый код.
