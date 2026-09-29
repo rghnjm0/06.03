@@ -1,336 +1,324 @@
-# Повторный анализ — что ещё осталось
+# Отчёт по OWASP Top 10 (2025) для проекта «Уют»
 
-В первом ответе я перечислил 11 проблем, из них 3 (№1, №2, №3) мы исправили. Ниже — **оставшиеся из списка** плюс **новые ошибки**, которые я нашёл при втором проходе по коду.
-
----
-
-## 🔴 Новые критичные находки
-
-### №12. `routes/auth.py` → `register()` — генерация `ID_Клиента` через `COUNT(*)` даёт коллизии
-
-```python
-cursor.execute("SELECT COUNT(*) FROM Клиенты")
-count = cursor.fetchone()[0] + 1
-client_id = f"CL{count:03d}"
-```
-
-**Проблема:** если из таблицы когда-либо удалят хотя бы одну запись, `COUNT(*)` уменьшится, и новый ID совпадёт с уже существующим. `UNIQUE`-констрейнт отклонит вставку, транзакция откатится, а пользователь увидит «Не удалось завершить регистрацию».
-
-В `admin.py` для той же задачи уже есть правильный инструмент — `utils.next_id()`. Здесь его забыли применить.
-
-**Исправление:**
-```python
-from utils import next_id
-...
-client_id = next_id(conn, 'Клиенты', 'CL', 'ID_Клиента')
-```
+Ниже — проверка по каждой из 10 категорий, по каждой находке указан файл и место, вход/выход, опасность. Отдельно — что нельзя проверить чтением кода.
 
 ---
 
-### №13. `routes/auth.py` → `register()` — соединение закрывается без отката транзакции
+## A01 — Broken Access Control
 
-```python
-conn.execute('BEGIN IMMEDIATE')
-cursor.execute("SELECT ID_Клиента FROM Клиенты WHERE Телефон = ?", (phone,))
-if cursor.fetchone():
-    flash('Клиент с таким телефоном уже зарегистрирован', 'danger')
-    conn.close()      # ← транзакция BEGIN IMMEDIATE всё ещё открыта
-    return render_template('register.html')
-```
+**Нашел.**
 
-SQLite при `close()` неявно откатывает транзакцию, поэтому порчи данных не будет, но это плохая практика: в пуле соединений или при переходе на другую СУБД приведёт к зависшим блокировкам. Также `except` не делает `conn.rollback()`.
+1. **`routes/auth.py` (вход в `login()`, строки с `if login_value.lower() == 'admin':`)**  
+   - **Вход атакующего:** логин `admin` с чужим паролем и разными форматами телефона (`+7(999)123-45-67`, `+79991234567`, `+7 999 123 45 67`).  
+   - **Выход:** ключ блокировки `identifier = login_value.lower()` создаётся от **сырой** строки. Для телефона фактический поиск пользователя делается по нормализованной строке (`REPLACE(...'(')=')')...`), но учёт неудачных попыток идёт по исходному значению. Пять попыток `+79991234567`, затем пять `+7(999)123-45-67` и т.д. — счётчик не срабатывает.  
+   - **Опасность:** обход rate-limit → brute force паролей гостей. Средняя/высокая, потому что эксплуатируется с одного IP без ботов.
 
-**Исправление:**
-```python
-if cursor.fetchone():
-    conn.rollback()
-    conn.close()
-    flash('Клиент с таким телефоном уже зарегистрирован', 'danger')
-    return render_template('register.html')
-```
+2. **`routes/admin.py` — `admin_logout` (POST `/admin/logout`)**  
+   Не имеет `@admin_required`, только CSRF. Посторонний залогиненный клиент может очистить свою сессию. Незначительно, но нарушает принцип «эндпоинты админ-зоны закрыты».
 
-И в `except`:
-```python
-except Exception:
-    try: conn.rollback()
-    except Exception: pass
-    finally: conn.close()
-    ...
-```
+3. **`routes/features.py` — `toggle_promocode`**  
+   Возвращает `redirect(url_for('admin_promocodes'))`, но `admin_promocodes` зарегистрирован на blueprint `features`. Реальный URL — `features.admin_promocodes`. Это `BuildError`, но сама проверка `@admin_required` стоит. Access control формально не нарушен, но логика роутов сломана.
+
+4. **`routes/features.py` — `room_reviews`**  
+   Публичный, отдаёт имена гостей (`c.Имя`) по любому `room_id`. Это раскрытие ПДн, но по OWASP это больше A01/приватность.
+
+**Что нельзя проверить чтением:** реальные права ОС на `hotel_management.db`, наличие WAF/прокси, ограничения на сетевом уровне.
 
 ---
 
-### №14. `routes/payments.py` → `create_payment()` — можно оплатить отменённую бронь
+## A02 — Security Misconfiguration
 
-```python
-booking = conn.execute("""
-    SELECT b.*, n.Номер_Комнаты
-    FROM Бронирования b
-    JOIN Номера n ON n.ID_Номера=b.ID_Номера
-    WHERE b.ID_Бронирования=? AND b.ID_Клиента=?
-""", (booking_id, session.get("client_id"))).fetchone()
-```
+**Нашел.**
 
-**Нет проверки `b.Статус NOT IN ('Отменено','Завершено')`.** Если гость откроет страницу подтверждения старой отменённой брони и нажмёт «Оплатить», платёж пройдёт, счёт пометится оплаченным, но бронь отменена. В финансовой отчётности появятся «оплаченные отменённые» брони.
+1. **`app.py`, `add_security_headers`** — заголовки `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `COOP`, `Permissions-Policy` стоят, но **нет `Content-Security-Policy`**.  
+   - **Вход:** любая XSS-подобная инъекция (например, через инлайн-скрипт в шаблоне).  
+   - **Выход:** браузер не блокирует inline/сторонние скрипты.  
+   - **Опасность:** повышает ущерб от XSS. Средняя.
 
-**Исправление:**
-```python
-booking = conn.execute("""
-    SELECT b.*, n.Номер_Комнаты
-    FROM Бронирования b
-    JOIN Номера n ON n.ID_Номера=b.ID_Номера
-    WHERE b.ID_Бронирования=? AND b.ID_Клиента=?
-      AND b.Статус NOT IN ('Отменено', 'Завершено')
-""", (booking_id, session.get("client_id"))).fetchone()
-```
+2. **`app.py`, строка `app.secret_key = os.environ.get("UYUT_SECRET_KEY") or secrets.token_hex(32)`**  
+   В dev — ОК, но при перезапуске сессии сбрасываются. В production требуется env. Формально не уязвимость, но легко забыть задать переменную и уехать в прод.
+
+3. **`db.py` — `DB_NAME` в корне проекта.**  
+   Файл `hotel_management.db` лежит рядом с кодом. Если веб-сервер/nginx настроят отдавать каталог проекта, БД утечёт целиком (хэши паролей + ПДн). Проверить конфиг сервера чтением кода нельзя, но это классический риск misconfig.
+
+4. **`routes/admin.py` — `admin_room_edit` вызывает `from hotel_logic import log_action` внутри функции** — небезопасно с точки зрения порядка импорта, но не критично.
 
 ---
 
-### №15. `routes/admin.py` → `admin_invoice_pay()` — та же проблема
+## A03 — Software and Data Integrity / Supply Chain
 
-```python
-conn.execute("UPDATE Счета SET Оплачено=1, Способ_оплаты=?, Дата_оплаты=date('now') WHERE ID_Бронирования=?", (method, booking_id))
-```
+**Нашел.**
 
-Администратор может «оплатить» любую бронь, включая отменённую. Нужно сначала проверить статус:
+1. **`templates/base.html` и `templates/admin/base_admin.html`** — подключение CDN без SRI:
+   ```html
+   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+   ```
+   - **Вход:** компрометация CDN или MITM в незащищённом канале.  
+   - **Выход:** браузер гостя исполняет вредоносный JS/подгружает вредоносный CSS без проверки целостности.  
+   - **Опасность:** высокая (полный захват сессии/CSRF/кейлоггер). SRI-хэши отсутствуют.
 
-```python
-booking = conn.execute("SELECT Статус FROM Бронирования WHERE ID_Бронирования=?", (booking_id,)).fetchone()
-if not booking:
-    raise ValueError('Бронирование не найдено.')
-if booking['Статус'] == 'Отменено':
-    raise ValueError('Нельзя отметить оплату по отменённой брони.')
-```
+2. **`requirements.txt`**  
+   ```
+   Flask>=3.0,<4.0
+   Pillow>=10.0,<12.0
+   ```
+   Нет lock-файла, нет точных версий. В диапазоне `Pillow >=10.0` есть версии с CVE (CVE-2023-50447 в <10.2 и др.).  
+   - **Опасность:** средняя (зависит от того, что поставит pip).
 
----
-
-### №16. `routes/admin.py` → `admin_booking_add()` — нет серверной валидации `client_id` и `room_id`
-
-```python
-client_id = request.form.get('client_id','')
-room_id = request.form.get('room_id','')
-...
-conn.execute("""INSERT INTO Бронирования(...) VALUES(?,?,?,...)""",
-    (booking_id, client_id, room_id, ...))
-```
-
-Проверяется только `room_id`:
-```python
-room = conn.execute('SELECT * FROM Номера WHERE ID_Номера=?',(room_id,)).fetchone()
-if not room: raise ValueError('Номер не найден.')
-```
-
-**`client_id` не проверяется вообще.** Если отправить POST напрямую с пустым `client_id`, SQLite выбросит `FOREIGN KEY constraint failed`, пользователь увидит «Внутренняя ошибка». Нужно:
-
-```python
-client = conn.execute('SELECT 1 FROM Клиенты WHERE ID_Клиента=?', (client_id,)).fetchone()
-if not client:
-    raise ValueError('Гость не найден.')
-```
+3. **`db.py` — `insert_test_data`** — `print` выводит сгенерированные пароли в stdout при первом запуске. Пароли попадают в логи сервиса/CI.
 
 ---
 
-## 🟠 Оставшиеся из первого анализа
+## A04 — Cryptographic Failures and Secrets
 
-### №4. `routes/features.py` → `profile_edit()` — нет проверки уникальности телефона
+**Проверил — в основном чисто, есть замечания.**
 
-```python
-conn.execute("UPDATE Клиенты SET ... Телефон=? ... WHERE ID_Клиента=?", (..., phone, session['client_id']))
-conn.execute("UPDATE Пользователи SET Логин=? WHERE ID_Клиента=?", (phone, session['client_id']))
-```
+1. **`auth.py`, `hash_password`** — `generate_password_hash(password, method="scrypt")` — корректно. Политика `PASSWORD_MIN_LENGTH = 12` соблюдена на сервере.
 
-Свободный гость может занять телефон другого клиента — сработает `UNIQUE`, транзакция откатится, но пользователь получит общее «Внутренняя ошибка». В `admin_client_edit` такая проверка есть, здесь её нет.
+2. **`auth.py`, `password_matches`** — `check_password_hash` только для `scrypt:`, `pbkdf2:`, `argon2:`. Legacy-пароли в открытом виде **не принимаются** (комментарий это подтверждает). Чисто.
 
-**Исправление:**
-```python
-duplicate = conn.execute(
-    "SELECT 1 FROM Клиенты WHERE Телефон=? AND ID_Клиента<>?",
-    (phone, session['client_id'])
-).fetchone()
-if duplicate:
-    raise ValueError('Этот телефон уже используется.')
-```
+3. **`db.py`, `add_admin_user`** — если `UYUT_BOOTSTRAP_ADMIN_PASSWORD` не задан, генерируется `secrets.token_urlsafe(24)` и печатается в stdout.  
+   - **Опасность:** пароль окажется в логах контейнера/CI. Средняя — требует явной ошибки эксплуатации.
+
+4. **`app.py`, cookie-политика** — `SESSION_COOKIE_HTTPONLY=True`, `SAMESITE='Lax'`, `SECURE` — только в prod. В dev cookie уходит по HTTP. Это ожидаемо для dev, но нужен явный запрет на прод без HTTPS.
+
+5. **`routes/auth.py`, `reset_access.py`** — CLI-утилита требует getpass, хэширует scrypt. ОК.
+
+**Что нельзя проверить:** реальные значения `UYUT_SECRET_KEY`, `UYUT_BOOTSTRAP_ADMIN_PASSWORD`, `UYUT_DEMO_*` в окружении; наличие `.env` в репозитории; права на файл БД.
 
 ---
 
-### №5. `routes/admin.py` → `admin_dashboard()` — «К оплате» может быть отрицательным
+## A05 — Injection (SQL, command, HTML)
 
-```python
-revenue = ... WHERE b.Статус!='Отменено'
-paid    = ... без фильтра по статусу
-unpaid  = revenue - paid
-```
+**Нашел.**
 
-Если оплаченный счёт относился к брони, которая позже была отменена, `paid > revenue`, и `unpaid` станет отрицательным. Карточка «К оплате» покажет бессмыслицу.
+1. **SQL — параметризация соблюдена** во всех запросах, что я проверил: `admin.py`, `auth.py`, `public.py`, `features.py`, `payments.py`.  
+   - `utils.next_id` строит f-строку, но поле и таблица валидируются белым списком, а `prefix` — регуляркой. Это корректный подход.
 
-**Исправление:**
-```python
-paid = conn.execute("""
-    SELECT COALESCE(SUM(s.Сумма_проживание),0)
-    FROM Счета s JOIN Бронирования b ON b.ID_Бронирования = s.ID_Бронирования
-    WHERE s.Оплачено=1 AND b.Статус != 'Отменено'
-""").fetchone()[0]
-```
+2. **HTML/JS-инъекция — есть.**
 
----
+   - **`templates/room_detail.html`**:  
+     ```html
+     onerror="this.src='{{ url_for('static', filename='images/rooms/default.jpg') }}'"
+     ```
+     `url_for` возвращает безопасный путь, инъекции нет.
 
-### №6. `routes/features.py` — мёртвая функция `notify()`
+   - **`templates/base.html` (внизу):**  
+     ```js
+     window.UYUT_CSRF = {{ csrf_token|tojson }};
+     ```
+     `tojson` экранирует. Чисто.
 
-```python
-def notify(client_id, title, text):
-    ...
-```
+   - **`templates/base.html` — `alert-{{ category }}`**  
+     `category` задаётся в `flash(...)` жёстко во всём коде. CSS-инъекция невозможна, если только кто-то не расширит список категорий. Проверил все вызовы `flash` — категории фиксированы. Чисто.
 
-Нигде не вызывается. Уведомления в БД создаются, но ни одно событие (успешная бронь, оплата, отмена) их не генерирует — раздел «Уведомления» у гостя всегда пуст. Либо вызывайте `notify()`, либо удаляйте.
+   - **`routes/admin.py` — `admin_room_add`**:  
+     ```python
+     flash(f'Номер {room_number} добавлен.', 'success')
+     ```
+     `room_number` — из формы, но Jinja2 экранирует `{{ message }}` в `base_admin.html`. XSS нет.
 
----
+   - **`routes/auth.py` — ошибки `str(ValueError)` уходят в flash:**
+     ```python
+     start, end = _date(check_in), _date(check_out)
+     ...
+     except Exception as e:
+         flash(str(e) if isinstance(e, ValueError) else 'Внутренняя ошибка...', 'danger')
+     ```
+     Сообщение `time data '...' does not match format '%Y-%m-%d'` попадает в UI. Это **не XSS** (Jinja2), но **утечка деталей** и удобная точка для уточнения формата. Низкая.
 
-### №7. `templates/admin/base_admin.html` — двойная подсветка активного пункта
+3. **Command injection** — не найдено, `subprocess`, `os.system`, `eval`, `exec` не используются.
 
-```html
-<a class="nav-link {% if request.endpoint in ['admin_bookings','admin_calendar'] %}active{% endif %}" href="...">Бронирования</a>
-...
-<a class="nav-link {% if request.endpoint == 'admin_calendar' %}active{% endif %}" href="...">Календарь</a>
-```
+4. **Template injection** — не найдено, шаблоны компилируются заранее.
 
-На странице календаря подсвечиваются **два** пункта меню. Уберите `'admin_calendar'` из первого условия.
-
----
-
-### №8. `utils.py` → `sync_room_statuses()` — неявная зависимость от миграции
-
-```python
-conn.execute("UPDATE Номера SET Статус = 'Свободен' WHERE COALESCE(Статус_обслуживания,'') = ''")
-```
-
-Колонка `Статус_обслуживания` создаётся в `features.ensure_features_schema()`. Сейчас порядок в `app.py` корректный, но если кто-то вызовет `sync_room_statuses()` раньше (например, в CLI-скрипте), получит `OperationalError`. Стоит добавить проверку:
-
-```python
-cols = [r['name'] for r in conn.execute("PRAGMA table_info(Номера)").fetchall()]
-if 'Статус_обслуживания' in cols:
-    conn.execute("UPDATE Номера SET Статус='Свободен' WHERE COALESCE(Статус_обслуживания,'')=''")
-else:
-    conn.execute("UPDATE Номера SET Статус='Свободен'")
-```
+**Что нельзя проверить:** поведение внешних сервисов, содержимое БД до старта (могут быть преднамеренные SQL-строки в `Телефон`).
 
 ---
 
-### №9. `reset_access.py` — дублирование пароля в двух таблицах
+## A06 — Insecure Design
 
-```python
-conn.execute("UPDATE Пользователи SET Пароль=? WHERE ID_Клиента=? AND Роль='admin'", ...)
-conn.execute("UPDATE Сотрудники SET Пароль=? WHERE Логин=(SELECT Логин FROM Пользователи WHERE ID_Клиента=? AND Роль='admin')", ...)
-```
+**Нашел.**
 
-Авторизация идёт только по `Пользователи`. Второй `UPDATE` создаёт две точки правды для одного секрета — при рассинхроне поведение непредсказуемо. Достаточно первого.
+1. **`routes/auth.py`, `create_booking`** — двухэтапное бронирование с `BEGIN IMMEDIATE` и повторной проверкой конфликта. Хорошо.
 
----
+2. **Гонка при оплате демо** (`payments.py`):  
+   ```python
+   UPDATE Счета SET Оплачено=1, Способ_оплаты='Онлайн (демо)' WHERE ID_Бронирования=?
+   ```
+   Нет `WHERE Оплачено=0` и нет уникальности платежа — двойной клик создаст вторую запись `Платежи`.  
+   - **Вход:** два параллельных POST `/payment/create/BRxxx`.  
+   - **Выход:** два платежа, счёт помечен оплаченным, но `Бронирования.Предоплата` перезапишется.  
+   - **Опасность:** средняя — нарушает бизнес-инварианты.
 
-### №10. `utils.py` → `get_room_image()` — fallback отдаёт случайное фото
+3. **`routes/admin.py`, `admin_booking_add`** — админ может создать бронь с `Статус='Завершено'` и датой выезда в прошлом, **но** не может — с датой заезда в прошлом и `Статус='Подтверждено'`. Непоследовательно, но не критично.
 
-```python
-if available:
-    filename = available[sum(ord(ch) for ch in room_number_str) % len(available)]
-    return url_for("static", filename=f"images/rooms/{filename}")
-```
-
-Если у номера нет своего файла, ему «назначается» псевдослучайная картинка из пула. Для демо ок, но в реальной эксплуатации гость увидит чужой номер. Лучше отдавать `default.jpg`.
+4. **`features.py`, `check_promo`** — принимает `code` из формы, `discount_percent` кладётся в `session['promo']`, а итог всё равно пересчитывается при подтверждении. Хорошо спроектировано.
 
 ---
 
-### №11. `templates/room_detail.html` — рейтинг всегда 5 звёзд
+## A07 — Authentication & Session
 
-```html
-<i class="fas fa-star text-warning"></i> ×5
-<span class="text-muted ms-1">{{ "%.1f"|format(avg_rating["avg"] or 0) }} ({{avg_rating["count"]}})</span>
-```
+**Нашел.**
 
-Пять жёлтых звёзд захардкожены независимо от `avg_rating["avg"]`. Число рядом правильное, но визуал вводит в заблуждение. Нужно рендерить звёзды в цикле по округлённому среднему.
+1. **`routes/auth.py`, `login()`** — rate-limit обходится форматами телефона (см. A01.1). Дубль.
 
----
+2. **`routes/auth.py`, `login()` — админ-логин жёстко привязан к логину `admin`:**  
+   ```python
+   if login_value.lower() == 'admin':
+       cursor.execute("... WHERE u.Роль = 'admin' LIMIT 1")
+   ```
+   Любой второй админ в `Пользователи` (например, созданный вручную) **недоступен для входа по логину** — он сможет войти только по телефону через fallback-запрос. Это design-баг с последствиями для сопровождения.
 
-## 🟡 Мелкие замечания (из второго прохода)
+3. **`app.py`, `PERMANENT_SESSION_LIFETIME = 60*60*8`** — сессия 8 часов. Формально ОК.  
+   - Отсутствует ротация CSRF-токена между сессиями — он один и хранится в сессии. При компрометации cookie можно делать POST. Компенсируется тем, что украсть cookie сложнее, чем XSS-жертву.
 
-### №17. `routes/admin.py` → `admin_booking_update()` — можно реактивировать отменённую бронь задним числом
+4. **`routes/auth.py`, `register()`** — минимальная длина пароля на клиенте 6, на сервере 12. Пользователь получает «пароль должен содержать минимум 12 символов» после отправки. Не безопасность, но UX + несогласованность.
 
-```python
-if new_status in ACTIVE and booking_conflicts(...):
-    raise ValueError('Нельзя активировать бронь: даты пересекаются с другой активной бронью.')
-conn.execute('UPDATE Бронирования SET Статус=? WHERE ID_Бронирования=?',(new_status,booking_id))
-```
+5. **`routes/auth.py`, `login()` — все попытки входа в отдельную таблицу**, ошибки не уходят в `current_app.logger`. См. A09.
 
-Нет проверки, что `Дата_заезда >= today` при переходе из «Отменено» в «Подтверждено». После этого `sync_room_statuses()` пометит номер «Будет занят» из-за брони в прошлом.
-
----
-
-### №18. `routes/features.py` → `export_guests()` — утечка соединения при исключении
-
-```python
-conn = get_db(); rows = conn.execute("SELECT ...").fetchall(); conn.close()
-```
-
-Если `execute()` бросит исключение, `close()` не выполнится. Оберните в `try/finally`.
+**Что нельзя проверить:** реальный HTTPS-контур, HSTS-предзагрузку, наличие ротации `UYUT_SECRET_KEY`.
 
 ---
 
-### №19. `routes/admin.py` → `admin_room_add()` / `admin_room_edit()` — не валидируется `category`
+## A08 — Software and Data Integrity Failures
 
-Шаблон предлагает фиксированный список, но сервер принимает любую строку. Мелкая дыра для мусорных данных:
+**Нашел.**
 
-```python
-ALLOWED_CATEGORIES = {'Стандарт','Стандарт Плюс','Полулюкс','Люкс','Апартаменты','Премиум'}
-if category not in ALLOWED_CATEGORIES:
-    raise ValueError('Недопустимая категория номера.')
-```
+1. **CDN без SRI** — это одновременно A03 и A08. Злоумышленник, компрометирующий jsdelivr/cloudflare, получает исполнение своего JS в браузерах гостей и админов.
 
----
+2. **`payments.py`, `payment_webhook`:**  
+   ```python
+   @payments_bp.post("/payment/webhook")
+   def payment_webhook():
+       return "ok", 200
+   ```
+   Эндпоинт **исключён из CSRF** (`app.py`, `csrf_protect`) и не имеет проверки подписи. Сейчас он пустой, но сохранён как публичная точка входа. Если кто-то добавит туда логику (а это типично), она автоматически станет доступной без аутентификации.
 
-### №20. `routes/admin.py` → `admin_dashboard()` — `total_clients` вычисляется, но не используется
+3. **`db.py`** — SQLite-файл не подписан, не проверяется целостность. Если злоумышленник получит доступ к ФС, подмена БД не будет замечена.
 
-```python
-total_clients = conn.execute("SELECT COUNT(*) FROM Клиенты").fetchone()[0]
-```
-
-Передаётся в шаблон через `**locals()`, но `dashboard.html` его не использует. Мелочь, но лишний запрос на каждый рендер.
+4. **`ensure_extra_rooms`** делает `INSERT OR IGNORE` и `UPDATE` в `Номера` при каждом старте приложения. Идемпотентно, но всё равно автоматическая мутация данных в рантайме — не best practice.
 
 ---
 
-### №21. `utils.py` → `next_id()` — потенциальная гонка при отсутствии `BEGIN IMMEDIATE`
+## A09 — Logging & Monitoring
 
-```python
-rows = conn.execute(f"SELECT {field} FROM {table} WHERE {field} LIKE ?", ...).fetchall()
-...
-return f"{prefix}{max_number + 1:03d}"
-```
+**Нашел.**
 
-Два параллельных запроса без `BEGIN IMMEDIATE` могут получить одинаковый ID. В `create_booking()` транзакция есть, но в `admin_client_add()` — нет. Оберните INSERT в `BEGIN IMMEDIATE` или используйте `AUTOINCREMENT`.
+1. **`Журнал_действий` не покрывает:**
+
+   - `admin_client_add` (создание гостя) — **нет вызова `log_action`**.
+   - `admin_client_edit` (правка ПДн и пароля гостя) — **нет вызова**.
+   - Изменение гостевого пароля самим гостем (`features.change_password`) — **нет вызова**.
+   - `admin_promocodes` (создание промокода), `toggle_promocode`, `add_gallery` — **нет вызова**.
+   - Успешный вход / выход / неудачный вход — **нет вызова** (входы падают в `Попытки_входа`, но не в общий журнал).
+   - Оплата через демо — есть `log_action`, ОК.
+
+2. **`routes/auth.py`, `login()` — при 5 неудачах пишется только `flash` для пользователя**. Ни `current_app.logger.warning`, ни запись в `Журнал_действий`.  
+   - **Вход:** подбор пароля.  
+   - **Выход:** атака видна только в таблице `Попытки_входа`, но не в общем журнале и не в stdout.  
+   - **Опасность:** низкая по эффекту, но снижает detectability.
+
+3. **`routes/auth.py` `reset_access.py`** — CLI без записи в аудит. Окружение всё равно меняет.
 
 ---
 
-## Сводная таблица
+## A10 — Mishandling of Exceptional Conditions
 
-| # | Файл | Суть | Приоритет |
-|---|------|------|-----------|
-| 1 | `routes/features.py` | `url_for('admin_promocodes')` → `features.admin_promocodes` | ✅ исправлено |
-| 2 | `routes/auth.py` | Промокод на шаге confirm берётся из формы | ✅ исправлено |
-| 3 | `routes/auth.py` | В `profile()` сумма берётся из счёта | ✅ исправлено |
-| 12 | `routes/auth.py` | `register()`: `next_id` вместо `COUNT(*)` | 🔴 |
-| 13 | `routes/auth.py` | `register()`: rollback перед close | 🔴 |
-| 14 | `routes/payments.py` | Оплата отменённой брони | 🔴 |
-| 15 | `routes/admin.py` | Оплата отменённой брони админом | 🔴 |
-| 16 | `routes/admin.py` | Валидация `client_id` в `admin_booking_add` | 🔴 |
-| 4 | `routes/features.py` | Уникальность телефона в `profile_edit` | 🟠 |
-| 5 | `routes/admin.py` | Отрицательный «К оплате» | 🟠 |
-| 6 | `routes/features.py` | Мёртвая `notify()` | 🟡 |
-| 7 | `admin/base_admin.html` | Двойная подсветка | 🟡 |
-| 8 | `utils.py` | `sync_room_statuses` зависит от миграции | 🟡 |
-| 9 | `reset_access.py` | Дублирование пароля | 🟡 |
-| 10 | `utils.py` | Случайный fallback-фото | 🟡 |
-| 11 | `room_detail.html` | 5 звёзд всегда | 🟡 |
-| 17 | `routes/admin.py` | Реактивация отменённой брони задним числом | 🟡 |
-| 18 | `routes/features.py` | Утечка соединения в `export_guests` | 🟡 |
-| 19 | `routes/admin.py` | Валидация категории номера | 🟡 |
-| 20 | `routes/admin.py` | Неиспользуемый `total_clients` | ⚪ |
-| 21 | `utils.py` | Гонка в `next_id()` без `BEGIN IMMEDIATE` | ⚪ |
+**Нашел.**
 
-Скажите, какие из них исправить следующими — и я дам готовый код.
+1. **`routes/admin.py`, `admin_booking_add`:**
+   ```python
+   start, end = _date(check_in), _date(check_out)
+   ...
+   except Exception as e:
+       conn.rollback(); flash(str(e) if isinstance(e, ValueError) else 'Внутренняя ошибка. Попробуйте ещё раз.', 'danger')
+   ```
+   При `check_in = "abc"` сообщение `time data 'abc' does not match format '%Y-%m-%d'` показывается админу. Утечка деталей. Низкая.
+
+2. **`routes/auth.py`, `create_booking`** — есть `except Exception` с rollback, но:
+   ```python
+   except Exception as e:
+       conn.rollback()
+       current_app.logger.exception('Ошибка создания бронирования')
+       flash('Не удалось создать бронирование. Попробуйте ещё раз.', 'danger')
+   ```
+   Хорошо, но нет проверки `if conn.in_transaction:` перед `rollback()` — в SQLite при уже совершённом commit `rollback` не падает, но лучше проверять.
+
+3. **`payments.py`, `create_payment` — `amount` не проверяется на положительность и на разумность.**  
+   - **Вход:** подделанный POST с `Предоплата` в БД? Нет, `Предоплата` берётся из БД, не из формы. Значение `Предоплата` формируется сервером. ОК.
+
+4. **`features.py`, `add_gallery`** — при исключении возвращает `redirect(url_for('admin_rooms'))`, что нормально; но при `ValueError` в `f.filename.rsplit('.',1)` (filename без точки) `len(original) != 2` → сработает проверка, `ValueError` покажется пользователю. Норма.
+
+5. **DoS-вектор:** `get_room_image` в цикле смотрит файлы — не применимо. `next_id` сканирует всю таблицу — при большой БД можно замедлить POST-формы. Низкая.
+
+**Что нельзя проверить:** поведение SQLite под нагрузкой, сработает ли watchdog на большой БД, есть ли таймауты БД.
+
+---
+
+## Legacy-файлы и код
+
+**Нашел.**
+
+1. **`auth.py` `password_matches`** содержит fallback под legacy:
+   ```python
+   if stored.startswith(("scrypt:", "pbkdf2:", "argon2:")):
+       try:
+           return check_password_hash(stored, supplied)
+       except ValueError:
+           return False
+   return False
+   ```
+   Последний `return False` отсекает «сырые» пароли. Комментарий обещает миграцию, но в проекте **нет** процедуры миграции legacy-паролей (`db.py` уже генерирует хэши, `reset_access.py` тоже). Это мёртвый код, но безвредный.
+
+2. **Дублирование имён** — файл `auth.py` существует и в корне, и в `routes/`. Это сбивает: `routes/auth.py` импортирует `from auth import ...` (корневой), а `db.py` импортирует тот же корневой. Имя `routes/auth.py` не соответствует своему содержимому (оно про роуты, а не про аутентификацию). Переименовать в `routes/guest_routes.py` или аналогичное.
+
+3. **`login.html` в проекте дважды** (один — заглушка-редирект, второй — реальный). Flask подхватит один, второй неиспользуемый. Нужно удалить лишний.
+
+4. **`routes/public.py`** заканчивается комментарием `# ============= АДМИН-ПАНЕЛЬ =============`, а внутри — только публичные роуты. Комментарий устарел.
+
+5. **`templates/booking.html`** содержит много inline `<style>` и `<script>` — противоречит принципу «CSS/JS в отдельных файлах».
+
+---
+
+## Разбиение модулей
+
+**Нашел.**
+
+- **Python:** логика по роутам вынесена в `routes/*` — это хорошо. Но `hotel_logic.py` совмещает миграции, бизнес-логику услуг и `log_action`. Стоит разделить: `migrations.py`, `services.py`, `audit.py`.
+- **HTML:** шаблоны в `templates/` и `templates/admin/` — ОК.
+- **CSS:** `style.css` и `admin.css` — ОК, но `style.css` очень большой (много секций для публичных страниц).
+- **JS:** в `base.html` встроен инлайн-скрипт `window.UYUT_CSRF = ...` и авто-вставка CSRF в формы. Хорошо, что централизовано, но инлайн — против CSP.
+- **Инлайн CSS/JS в шаблонах** (`booking.html`, `contact.html`, `room_detail.html`, `profile.html`) — не критично для безопасности, но мешает CSP `style-src 'self'` и `script-src 'self'`.
+
+---
+
+## Что нельзя проверить чтением кода
+
+- **Реальные секреты** — `UYUT_SECRET_KEY`, `UYUT_BOOTSTRAP_ADMIN_PASSWORD`, `UYUT_DEMO_*`. Если утекут в репозиторий/логи — это уже инцидент.
+- **Права файловой системы** на `hotel_management.db`, папку `static/images/rooms/`, и есть ли в них `default.jpg`, `301.jpg` и т.д.
+- **Уязвимости в конкретных версиях Flask/Pillow**, установленных на боевом сервере.
+- **Настройки reverse-proxy** (nginx, gunicorn) — HTTPS, HSTS, ограничения размера запроса, базовые таймауты.
+- **Настройки SQLite** — WAL, права, шифрование (SQLCipher не подключён).
+- **Настройки CDN** — включены ли проверки SRI/COEP/CORP.
+- **Наличие централизованного мониторинга логов** — в коде `current_app.logger.*` есть, но куда они идут, не видно.
+- **Поведение браузеров на боевой версии** (в том числе то, как реально отработает `redirect('/\\evil.com')` в `routes/auth.py` — это потенциальный open redirect: `urlparse('/\\evil.com')` даёт path `/\\evil.com`, `startswith('//')` не срабатывает, а браузеры нормализуют `\` в `/`. Проверить надо на живом браузере).
+- **Наличие секретов в `.env`/Dockerfile/CI** — в присланных файлах их нет, но это не значит, что их нет в репозитории.
+
+---
+
+## Сводка приоритетов
+
+| # | Категория | Находка | Приоритет |
+|---|-----------|---------|-----------|
+| 1 | A03/A08 | Нет SRI для CDN Bootstrap/FontAwesome | Высокий |
+| 2 | A01/A07 | Rate-limit обходится форматами телефона | Высокий |
+| 3 | A04 | Bootstrap-пароль админа печатается в stdout | Средний |
+| 4 | A02 | Нет `Content-Security-Policy` | Средний |
+| 5 | A08 | `payment_webhook` вне CSRF и без подписи | Средний (архитектурный) |
+| 6 | A06 | Гонка в демо-оплате | Средний |
+| 7 | A09 | Нет логов для login-success/fail, изменения гостя, промокодов | Средний |
+| 8 | A01 | `auth.py` — потенциальный open redirect через `\` | Средний |
+| 9 | A02 | SQLite рядом с кодом | Средний |
+| 10 | A05 | Детальные ошибки парсинга дат в UI | Низкий |
