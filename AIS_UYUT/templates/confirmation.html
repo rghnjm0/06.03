@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}Бронирование {{ booking['ID_Бронирования'] }} — Уют{% endblock %}
+{% block content %}
+<div class="container py-5">
+  <div class="card p-4 p-lg-5 mx-auto" style="max-width:900px">
+    <div class="text-center mb-4">
+      <div class="display-5 mb-2">✓</div>
+      <h1 class="h2">Бронирование подтверждено</h1>
+      <p class="text-muted">Номер брони: <strong>{{ booking['ID_Бронирования'] }}</strong></p>
+    </div>
+    <div class="row g-4">
+      <div class="col-md-7">
+        <div class="p-3 rounded border bg-light-subtle">
+          <h5>Детали проживания</h5>
+          <p class="mb-1"><strong>Номер:</strong> {{ booking['Номер_Комнаты'] }} · {{ booking['Категория'] }}</p>
+          <p class="mb-1"><strong>Заезд:</strong> {{ booking['Дата_заезда'] }}</p>
+          <p class="mb-1"><strong>Выезд:</strong> {{ booking['Дата_выезда'] }}</p>
+          <p class="mb-0"><strong>Гостей:</strong> {{ booking['Количество_гостей'] }}</p>
+        </div>
+        <div class="mt-4">
+          <h5>Дополнительные услуги</h5>
+          {% for service in services %}
+          <div class="d-flex justify-content-between border-bottom py-2"><span>{{ service['Название'] }}{% if service['Количество']|default(1) > 1 %} × {{ service['Количество'] }}{% endif %}</span><strong>{{ '%.0f'|format(service['Цена_при_бронировании']|default(service['Цена'])) }} ₽</strong></div>
+          {% else %}<p class="text-muted">Дополнительные услуги не выбраны.</p>{% endfor %}
+        </div>
+      </div>
+      <div class="col-md-5">
+        <div class="p-4 rounded border">
+          <div class="d-flex justify-content-between"><span>Итого</span><strong>{{ '%.0f'|format(booking['total_price']) }} ₽</strong></div>
+          <div class="d-flex justify-content-between mt-2"><span>Предоплата 30%</span><strong>{{ '%.0f'|format(booking['payment_amount']) }} ₽</strong></div>
+          <hr>
+          {% if booking['payment_paid'] %}
+            <div class="alert alert-success mb-0">Оплата получена. Бронь оплачена в демо-режиме.</div>
+          {% else %}
+            <form method="post" action="{{ url_for('payments.create_payment', booking_id=booking['ID_Бронирования']) }}"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
+              <button class="btn btn-primary btn-lg w-100" type="submit">Оплатить {{ '%.0f'|format(booking['payment_amount']) }} ₽</button>
+            </form>
+            <small class="text-muted d-block mt-2">Демо-оплата внутри системы: реальные деньги не списываются.</small>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+    <div class="d-flex flex-wrap gap-2 justify-content-center mt-4">
+      <a href="{{ url_for('profile') }}" class="btn btn-outline-secondary">Личный кабинет</a>
+      <a href="{{ url_for('index') }}" class="btn btn-outline-secondary">На главную</a>
+    </div>
+  </div>
+</div>
+{% endblock %}

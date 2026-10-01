@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}Проверка бронирования — Уют{% endblock %}
+{% block content %}
+<div class="container py-5">
+  <div class="row g-4 justify-content-center">
+    <div class="col-lg-8">
+      <div class="card p-4">
+        <div class="d-flex gap-2 mb-3"><span class="badge bg-success">Шаг 1 готов</span><span class="badge bg-primary">Шаг 2</span></div>
+        <h2 class="mb-4">Проверьте бронирование</h2>
+        <div class="p-3 rounded bg-light mb-4">
+          <h5>Номер {{ room['Номер_Комнаты'] }} · {{ room['Категория'] }}</h5>
+          <div class="row mt-3"><div class="col-md-4"><small>Заезд</small><strong class="d-block">{{ check_in }}</strong></div><div class="col-md-4"><small>Выезд</small><strong class="d-block">{{ check_out }}</strong></div><div class="col-md-4"><small>Гостей</small><strong class="d-block">{{ guests }}</strong></div></div>
+        </div>
+        <h5>Услуги</h5>
+        {% if services %}{% for s in services %}<div class="d-flex justify-content-between py-2 border-bottom"><span>{{ s['Название'] }}</span><strong>{{ '%.0f'|format(s['Цена']) }} ₽</strong></div>{% endfor %}{% else %}<p class="text-muted">Дополнительные услуги не выбраны.</p>{% endif %}
+        <div class="mt-4 p-3 border rounded"><div class="input-group mb-3"><input class="form-control" name="promo_code" form="confirm-form" placeholder="Промокод" value="{{promo_code or ''}}"><button type="button" class="btn btn-outline-secondary" onclick="this.previousElementSibling.value=this.previousElementSibling.value.toUpperCase()">Применить</button></div>
+          <div class="d-flex justify-content-between"><span>Проживание · {{ nights }} ноч.</span><strong>{{ '%.0f'|format(room_total) }} ₽</strong></div>
+          <div class="d-flex justify-content-between"><span>Услуги</span><strong>{{ '%.0f'|format(services_total) }} ₽</strong></div>
+          <hr><div class="d-flex justify-content-between"><span>Скидка</span><strong>-{{ '%.0f'|format(discount or 0) }} ₽</strong></div><div class="d-flex justify-content-between fs-5"><strong>Итого</strong><strong>{{ '%.0f'|format(total) }} ₽</strong></div>
+          <div class="d-flex justify-content-between mt-2"><span>Предоплата 30%</span><strong>{{ '%.0f'|format(prepayment) }} ₽</strong></div>
+        </div>
+        <form method="post" id="confirm-form" class="mt-4" action="{{ url_for('create_booking', room_id=room['ID_Номера']) }}"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
+          <input type="hidden" name="check_in" value="{{ check_in }}"><input type="hidden" name="check_out" value="{{ check_out }}"><input type="hidden" name="guests" value="{{ guests }}">
+          {% for s in services %}<input type="hidden" name="services" value="{{ s['ID_Услуги'] }}">{% endfor %}
+          <button class="btn btn-primary btn-lg w-100" name="action" value="confirm">Подтвердить бронирование</button>
+        </form>
+        <a class="btn btn-outline-secondary w-100 mt-2" href="{{ url_for('create_booking', room_id=room['ID_Номера'], check_in=check_in, check_out=check_out, guests=guests) }}">Изменить параметры</a>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
