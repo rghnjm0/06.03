@@ -1,7 +1,0 @@
-{% extends "admin/base_admin.html" %}
-{% block page_title %}Журнал действий{% endblock %}
-{% block admin_content %}
-<div class="toolbar"><div><h3>Журнал действий</h3><p>История ключевых операций пользователей и сотрудников.</p></div></div>
-<div class="admin-card mb-3"><form class="d-flex gap-2"><input class="form-control" name="search" value="{{ search }}" placeholder="Поиск по пользователю, действию, объекту"><button class="btn btn-primary">Найти</button></form></div>
-<div class="admin-card"><div class="table-responsive"><table class="admin-table"><thead><tr><th>Время</th><th>Пользователь</th><th>Роль</th><th>Действие</th><th>Объект</th><th>Детали</th></tr></thead><tbody>{% for r in rows %}<tr><td>{{ r.Время }}</td><td>{{ r.Пользователь }}</td><td>{{ r.Роль }}</td><td><b>{{ r.Действие }}</b></td><td>{{ r.Объект }}</td><td>{{ r.Детали }}</td></tr>{% else %}<tr><td colspan="6" class="empty">Журнал пока пуст</td></tr>{% endfor %}</tbody></table></div></div>
-{% endblock %}
