@@ -1,0 +1,9 @@
+Убрать ensure_*_schema() из app.py, оставить только alembic upgrade head при старте (через flask db upgrade или ручной вызов). Это единственное крупное отклонение от чек-листа.
+
+Удалить templates/admin/login.html — мёртвый stub.
+
+Добавить .github/workflows/ci.yml с pytest + ruff + pip-audit. Сейчас CI в проекте нет, хотя README о нём говорит.
+
+Убрать оставшиеся try/rollback/finally в admin.py, account.py, features.py, payments.py — перевести на db_session().
+
+Опционально: вынести db.insert_test_data и ensure_extra_rooms в scripts/seed.py и Alembic-ревизию соответственно.
