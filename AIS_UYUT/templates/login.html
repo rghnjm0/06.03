@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}Вход — АИС «Уют»{% endblock %}
+{% block content %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/login.css') }}">
+<section class="auth-reference">
+  <div class="auth-box">
+    <div class="auth-icon"><i class="fa-solid fa-lock"></i></div>
+    <div class="auth-kicker">ОТЕЛЬ «УЮТ»</div>
+    <h1>Вход в систему</h1>
+    <p class="lead">Введите данные учётной записи для продолжения.</p>
+
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% for category, message in messages %}
+        <div class="alert alert-{{ 'danger' if category in ['danger','error'] else category }} py-2 small">{{ message }}</div>
+      {% endfor %}
+    {% endwith %}
+
+    <form method="POST" autocomplete="on"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
+      <label for="login">Логин</label>
+      <input id="login" name="login" type="text" autocomplete="username" required autofocus>
+      <label for="password">Пароль</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" required>
+      <button class="submit" type="submit"><i class="fa-solid fa-arrow-right-to-bracket me-2"></i>Войти</button>
+    </form>
+
+    <div class="auth-links">
+      <a href="{{ url_for('register') }}">Регистрация</a>
+      <a href="{{ url_for('index') }}">Вернуться на сайт</a>
+    </div>
+  </div>
+</section>
+{% endblock %}

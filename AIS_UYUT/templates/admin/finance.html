@@ -1,0 +1,7 @@
+{% extends "admin/base_admin.html" %}
+{% block page_title %}Финансы{% endblock %}
+{% block admin_content %}
+<div class="toolbar"><div><h3>Финансы</h3><p>Сводка по стоимости проживания и фактическим оплатам.</p></div></div>
+<div class="row g-3 mb-4">{% for val,label in [(totals.revenue,'Выручка'),(totals.paid,'Оплачено'),(totals.debt,'К оплате'),(totals.bookings,'Бронирований')] %}<div class="col-md-3"><div class="stat-card"><div class="stat-value">{% if label=='Бронирований' %}{{ val }}{% else %}{{ '%.0f'|format(val) }} ₽{% endif %}</div><div class="stat-label">{{ label }}</div></div></div>{% endfor %}</div>
+<div class="row g-3"><div class="col-lg-6"><div class="admin-card"><h5>Оплата по способам</h5>{% for r in by_payment %}<div class="room-stat-row"><b>{{ r.method }}</b><span>{{ r.count }} платежей</span><strong>{{ '%.0f'|format(r.amount) }} ₽</strong></div>{% else %}<p class="empty">Оплат пока нет</p>{% endfor %}</div></div><div class="col-lg-6"><div class="admin-card"><h5>По месяцам</h5>{% for r in by_month %}<div class="room-stat-row"><b>{{ r.month }}</b><span>{{ r.count }} броней</span><strong>{{ '%.0f'|format(r.amount) }} ₽</strong></div>{% else %}<p class="empty">Нет данных</p>{% endfor %}</div></div></div>
+{% endblock %}
