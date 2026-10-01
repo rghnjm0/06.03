@@ -1,0 +1,8 @@
+{% extends "admin/base_admin.html" %}
+{% block page_title %}Календарь номерного фонда{% endblock %}
+{% block admin_content %}
+<div class="toolbar"><div><h3>Календарь загрузки</h3><p>14 дней по каждому номеру. Статусы берутся из реальных бронирований.</p></div><div class="d-flex gap-2"><a class="btn btn-outline-secondary" href="{{ url_for('admin_calendar', start=(start-timedelta(days=14)).strftime('%Y-%m-%d')) }}">← 14 дней</a><a class="btn btn-outline-secondary" href="{{ url_for('admin_calendar') }}">Сегодня</a><a class="btn btn-outline-secondary" href="{{ url_for('admin_calendar', start=(start+timedelta(days=14)).strftime('%Y-%m-%d')) }}">14 дней →</a></div></div>
+<div class="admin-card"><div class="table-responsive"><table class="admin-table calendar-table"><thead><tr><th>Номер</th>{% for d in days %}<th class="text-center">{{ d.strftime('%d.%m') }}<small class="d-block">{{ ['Пн','Вт','Ср','Чт','Пт','Сб','Вс'][d.weekday()] }}</small></th>{% endfor %}</tr></thead><tbody>
+{% for room in rooms %}<tr><td><b>{{ room['Номер_Комнаты'] }}</b><small>{{ room['Категория'] }}</small></td>{% for d in days %}{% set ds=d.strftime('%Y-%m-%d') %}{% set ns=[] %}{% for b in bookings %}{% if b['ID_Номера']==room['ID_Номера'] and b['Дата_заезда'] <= ds and b['Дата_выезда'] > ds %}{% set _=ns.append(b) %}{% endif %}{% endfor %}<td class="calendar-cell {% if ns %}{% if ns[0]['Статус']=='Заселен' %}occupied{% else %}reserved{% endif %}{% else %}free{% endif %}">{% if ns %}<span>{{ ns[0]['Статус'] }}</span><small>{{ ns[0]['Фамилия'] }} {{ ns[0]['Имя'][0] }}.</small>{% else %}<span>Свободен</span>{% endif %}</td>{% endfor %}</tr>{% endfor %}
+</tbody></table></div></div>
+{% endblock %}

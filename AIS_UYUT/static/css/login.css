@@ -1,0 +1,13 @@
+.auth-reference{min-height:calc(100vh - 100px);display:grid;place-items:center;padding:45px 20px;background:linear-gradient(135deg,#f5eee5,#efe3d4 52%,#e8e6dc)}
+.auth-box{width:min(510px,100%);background:#fffaf4;border:1px solid #e5d7c8;border-radius:24px;box-shadow:0 24px 65px rgba(68,46,30,.12);padding:34px}
+.auth-icon{width:58px;height:58px;border-radius:16px;background:#ead7c2;color:#9d5943;display:grid;place-items:center;font-size:24px;margin-bottom:20px}
+.auth-kicker{font-size:10px;letter-spacing:.2em;font-weight:800;color:#9a705d}
+.auth-box h1{font:700 32px 'Playfair Display',serif;color:#30261f;margin:8px 0}
+.auth-box .lead{color:#796d61;font-size:13px;line-height:1.65;margin-bottom:24px}
+.auth-reference label{display:block;color:#75685c;font-size:11px;font-weight:700;margin:14px 0 7px}
+.auth-reference input{width:100%;border:1px solid #dfd2c5;background:#fffdf9;color:#352b24;border-radius:11px;padding:12px 13px;outline:none;box-sizing:border-box}
+.auth-reference input:focus{border-color:#bd8069;box-shadow:0 0 0 4px rgba(169,95,71,.11)}
+.auth-reference .submit{width:100%;margin-top:18px;border:0;border-radius:11px;background:#a95f47;color:#fff;padding:13px;font-weight:800;cursor:pointer}
+.auth-reference .submit:hover{background:#864936}
+.auth-links{display:flex;justify-content:center;gap:12px;margin-top:18px;font-size:11px}.auth-links a{color:#8d5544;text-decoration:none}.auth-links a:hover{text-decoration:underline}
+@media(max-width:520px){.auth-box{padding:25px}.auth-box h1{font-size:28px}}
