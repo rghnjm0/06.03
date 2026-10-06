@@ -7,29 +7,29 @@ using System.Windows.Forms;
 namespace SupportDesk.forms
 {
     /// <summary>
-    /// Договоры и гарантии. Не дублирует Inventory: там место и количество, здесь контрагент и сроки.
+    /// Журнал посещений серверной. Не заявка и не справочник кабинетов.
     /// </summary>
-    public class ContractsForm : Form
+    public class ServerRoomLogForm : Form
     {
         private SQLiteConnection DB;
         private DataGridView grid;
-        private TextBox tbEquipment, tbInv, tbSupplier, tbNumber, tbComment;
-        private DateTimePicker dtContract, dtWarranty, dtSupport;
+        private TextBox tbVisitor, tbPurpose, tbActions, tbAccompanied;
+        private DateTimePicker dtVisit;
         private readonly DateTime thisDay = DateTime.Now;
 
-        public ContractsForm()
+        public ServerRoomLogForm()
         {
-            Text = "Договоры и гарантии";
+            Text = "Журнал посещений серверной";
             FormBorderStyle = FormBorderStyle.None;
             StartPosition = FormStartPosition.CenterScreen;
-            Size = new Size(980, 640);
+            Size = new Size(980, 620);
             BackColor = Color.FromArgb(24, 28, 36);
             ForeColor = Color.White;
             Font = new Font("Arial", 10);
 
             Label title = new Label
             {
-                Text = "Договоры и гарантии",
+                Text = "Журнал посещений серверной",
                 Font = new Font("Arial", 16, FontStyle.Bold),
                 ForeColor = Color.White,
                 Location = new Point(20, 12),
@@ -45,7 +45,7 @@ namespace SupportDesk.forms
             grid = new DataGridView
             {
                 Location = new Point(20, 56),
-                Size = new Size(940, 300),
+                Size = new Size(940, 320),
                 ReadOnly = true,
                 AllowUserToAddRows = false,
                 SelectionMode = DataGridViewSelectionMode.FullRowSelect,
@@ -54,32 +54,29 @@ namespace SupportDesk.forms
                 AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill
             };
             grid.Columns.Add("id", "ID");
-            grid.Columns.Add("equipment", "Оборудование");
-            grid.Columns.Add("inv", "Инв. номер");
-            grid.Columns.Add("supplier", "Поставщик");
-            grid.Columns.Add("number", "Договор");
-            grid.Columns.Add("contractDate", "Дата договора");
-            grid.Columns.Add("warranty", "Гарантия до");
-            grid.Columns.Add("support", "Поддержка до");
-            grid.Columns.Add("comment", "Комментарий");
+            grid.Columns.Add("visitDate", "Дата");
+            grid.Columns.Add("visitTime", "Время");
+            grid.Columns.Add("visitor", "Кто вошёл");
+            grid.Columns.Add("purpose", "Зачем");
+            grid.Columns.Add("actions", "Что сделано");
+            grid.Columns.Add("accompanied", "Сопровождал");
             grid.Columns["id"].Visible = false;
             Controls.Add(grid);
 
-            int y = 372;
-            tbEquipment = AddField("Оборудование", 20, y);
-            tbInv = AddField("Инв. номер", 250, y);
-            tbSupplier = AddField("Поставщик", 480, y);
-            tbNumber = AddField("№ договора", 710, y);
-            dtContract = AddDate("Дата договора", 20, y + 70);
-            dtWarranty = AddDate("Гарантия до", 250, y + 70);
-            dtSupport = AddDate("Поддержка до", 480, y + 70);
-            tbComment = AddField("Комментарий", 710, y + 70);
+            tbVisitor = AddField("Кто вошёл", 20, 390);
+            tbPurpose = AddField("Зачем", 250, 390);
+            tbActions = AddField("Что сделано", 480, 390);
+            tbAccompanied = AddField("Сопровождал", 710, 390);
+            Label l = new Label { Text = "Дата и время", Location = new Point(20, 460), AutoSize = true, ForeColor = Color.Gainsboro };
+            dtVisit = new DateTimePicker { Location = new Point(20, 482), Width = 210, Format = DateTimePickerFormat.Custom, CustomFormat = "dd.MM.yyyy HH:mm" };
+            Controls.Add(l);
+            Controls.Add(dtVisit);
 
-            Button add = MakeButton("Добавить", 20, 580, 140, 36);
+            Button add = MakeButton("Записать визит", 250, 476, 160, 36);
             add.Click += async (s, e) => await AddRow();
-            Button del = MakeButton("Удалить", 170, 580, 140, 36);
+            Button del = MakeButton("Удалить", 420, 476, 140, 36);
             del.Click += async (s, e) => await DeleteRow();
-            Button refresh = MakeButton("Обновить", 320, 580, 140, 36);
+            Button refresh = MakeButton("Обновить", 570, 476, 140, 36);
             refresh.Click += (s, e) => LoadRows();
             Controls.Add(add);
             Controls.Add(del);
@@ -90,6 +87,10 @@ namespace SupportDesk.forms
                 DB = new SQLiteConnection(Database.connectionString);
                 await DB.OpenAsync();
                 await NewModulesSchema.EnsureAsync(DB);
+                if (DataUsers.GroupUser == "WORKER")
+                {
+                    tbVisitor.Text = DataUsers.Initials;
+                }
                 LoadRows();
             };
             MouseDown += Drag;
@@ -102,15 +103,6 @@ namespace SupportDesk.forms
             Controls.Add(l);
             Controls.Add(t);
             return t;
-        }
-
-        private DateTimePicker AddDate(string caption, int x, int y)
-        {
-            Label l = new Label { Text = caption, Location = new Point(x, y), AutoSize = true, ForeColor = Color.Gainsboro };
-            DateTimePicker d = new DateTimePicker { Location = new Point(x, y + 22), Width = 210, Format = DateTimePickerFormat.Short };
-            Controls.Add(l);
-            Controls.Add(d);
-            return d;
         }
 
         private Button MakeButton(string text, int x, int y, int w, int h)
@@ -129,7 +121,7 @@ namespace SupportDesk.forms
         private async void LoadRows()
         {
             grid.Rows.Clear();
-            SQLiteCommand command = new SQLiteCommand($"SELECT * FROM [{Table_contracts.main}] ORDER BY ID DESC", DB);
+            SQLiteCommand command = new SQLiteCommand($"SELECT * FROM [{Table_serverRoom.main}] ORDER BY ID DESC", DB);
             SQLiteDataReader reader = null;
             try
             {
@@ -138,25 +130,17 @@ namespace SupportDesk.forms
                 {
                     grid.Rows.Add(
                         reader["ID"].ToString(),
-                        reader[Table_contracts.equipment].ToString(),
-                        reader[Table_contracts.invNum].ToString(),
-                        reader[Table_contracts.supplier].ToString(),
-                        reader[Table_contracts.contractNumber].ToString(),
-                        reader[Table_contracts.contractDate].ToString(),
-                        reader[Table_contracts.warrantyUntil].ToString(),
-                        reader[Table_contracts.supportUntil].ToString(),
-                        reader[Table_contracts.comment].ToString());
-                    string warranty = reader[Table_contracts.warrantyUntil].ToString();
-                    DateTime parsed;
-                    if (DateTime.TryParse(warranty, out parsed) && parsed.Date < thisDay.Date)
-                    {
-                        grid.Rows[grid.Rows.Count - 1].DefaultCellStyle.BackColor = Color.MistyRose;
-                    }
+                        reader[Table_serverRoom.visitDate].ToString(),
+                        reader[Table_serverRoom.visitTime].ToString(),
+                        reader[Table_serverRoom.visitor].ToString(),
+                        reader[Table_serverRoom.purpose].ToString(),
+                        reader[Table_serverRoom.actions].ToString(),
+                        reader[Table_serverRoom.accompaniedBy].ToString());
                 }
             }
             catch (Exception ex)
             {
-                MessageBoxUI.Show(ex.Message, "Договоры", "Error");
+                MessageBoxUI.Show(ex.Message, "Серверная", "Error");
             }
             finally
             {
@@ -166,42 +150,43 @@ namespace SupportDesk.forms
 
         private async System.Threading.Tasks.Task AddRow()
         {
-            if (tbEquipment.Text.Trim() == "" || tbSupplier.Text.Trim() == "" || tbNumber.Text.Trim() == "")
+            if (tbVisitor.Text.Trim() == "" || tbPurpose.Text.Trim() == "")
             {
-                MessageBoxUI.Show("Заполните оборудование, поставщика и номер договора.", "Договоры", "Error");
+                MessageBoxUI.Show("Укажите, кто вошёл и зачем.", "Серверная", "Error");
                 return;
             }
             SQLiteCommand command = new SQLiteCommand(
-                $"INSERT INTO {Table_contracts.main} ({Table_contracts.equipment}, {Table_contracts.invNum}, {Table_contracts.supplier}, {Table_contracts.contractNumber}, {Table_contracts.contractDate}, {Table_contracts.warrantyUntil}, {Table_contracts.supportUntil}, {Table_contracts.comment}) VALUES (@e, @i, @s, @n, @cd, @w, @su, @c)", DB);
-            command.Parameters.AddWithValue("e", tbEquipment.Text.Trim());
-            command.Parameters.AddWithValue("i", tbInv.Text.Trim());
-            command.Parameters.AddWithValue("s", tbSupplier.Text.Trim());
-            command.Parameters.AddWithValue("n", tbNumber.Text.Trim());
-            command.Parameters.AddWithValue("cd", dtContract.Value.ToString("dd.MM.yyyy"));
-            command.Parameters.AddWithValue("w", dtWarranty.Value.ToString("dd.MM.yyyy"));
-            command.Parameters.AddWithValue("su", dtSupport.Value.ToString("dd.MM.yyyy"));
-            command.Parameters.AddWithValue("c", tbComment.Text.Trim());
+                $"INSERT INTO {Table_serverRoom.main} ({Table_serverRoom.visitDate}, {Table_serverRoom.visitTime}, {Table_serverRoom.visitor}, {Table_serverRoom.purpose}, {Table_serverRoom.actions}, {Table_serverRoom.accompaniedBy}) VALUES (@d, @t, @v, @p, @a, @c)", DB);
+            command.Parameters.AddWithValue("d", dtVisit.Value.ToString("dd.MM.yyyy"));
+            command.Parameters.AddWithValue("t", dtVisit.Value.ToString("HH:mm"));
+            command.Parameters.AddWithValue("v", tbVisitor.Text.Trim());
+            command.Parameters.AddWithValue("p", tbPurpose.Text.Trim());
+            command.Parameters.AddWithValue("a", tbActions.Text.Trim());
+            command.Parameters.AddWithValue("c", tbAccompanied.Text.Trim());
             await command.ExecuteNonQueryAsync();
-            File.AppendAllText(Logs.file, $"[Договоры]{DataUsers.Initials} добавил договор {tbNumber.Text.Trim()} ({thisDay:dd.MM.yyyy HH:mm}){Environment.NewLine}");
-            tbEquipment.Clear();
-            tbInv.Clear();
-            tbSupplier.Clear();
-            tbNumber.Clear();
-            tbComment.Clear();
+            File.AppendAllText(Logs.file, $"[Серверная]{DataUsers.Initials} записал визит {tbVisitor.Text.Trim()} ({thisDay:dd.MM.yyyy HH:mm}){Environment.NewLine}");
+            tbPurpose.Clear();
+            tbActions.Clear();
+            tbAccompanied.Clear();
             LoadRows();
         }
 
         private async System.Threading.Tasks.Task DeleteRow()
         {
+            if (DataUsers.GroupUser != "ADMIN")
+            {
+                MessageBoxUI.Show("Удалять записи журнала может только ADMIN.", "Серверная", "Error");
+                return;
+            }
             if (grid.SelectedRows.Count == 0)
             {
                 return;
             }
             string id = grid.SelectedRows[0].Cells["id"].Value.ToString();
-            SQLiteCommand command = new SQLiteCommand($"DELETE FROM {Table_contracts.main} WHERE ID = @id", DB);
+            SQLiteCommand command = new SQLiteCommand($"DELETE FROM {Table_serverRoom.main} WHERE ID = @id", DB);
             command.Parameters.AddWithValue("id", id);
             await command.ExecuteNonQueryAsync();
-            File.AppendAllText(Logs.file, $"[Договоры]{DataUsers.Initials} удалил договор ID {id} ({thisDay:dd.MM.yyyy HH:mm}){Environment.NewLine}");
+            File.AppendAllText(Logs.file, $"[Серверная]{DataUsers.Initials} удалил визит ID {id} ({thisDay:dd.MM.yyyy HH:mm}){Environment.NewLine}");
             LoadRows();
         }
 
