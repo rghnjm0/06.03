@@ -1,212 +1,58 @@
-using System;
 using System.Data.SQLite;
-using System.Drawing;
-using System.IO;
-using System.Windows.Forms;
+using System.Threading.Tasks;
 
-namespace SupportDesk.forms
+namespace SupportDesk
 {
-    /// <summary>
-    /// Журнал посещений серверной. Не заявка и не справочник кабинетов.
-    /// </summary>
-    public partial class ServerRoomLogForm : Form
+    internal static class Table_contracts
     {
-        private SQLiteConnection DB;
-        private DataGridView grid;
-        private TextBox tbVisitor, tbPurpose, tbActions, tbAccompanied;
-        private DateTimePicker dtVisit;
-        private readonly DateTime thisDay = DateTime.Now;
+        public static string main = "Contracts";
+        public static string equipment = "equipment";
+        public static string invNum = "invNum";
+        public static string supplier = "supplier";
+        public static string contractNumber = "contractNumber";
+        public static string contractDate = "contractDate";
+        public static string warrantyUntil = "warrantyUntil";
+        public static string supportUntil = "supportUntil";
+        public static string comment = "comment";
+    }
 
-        public ServerRoomLogForm()
+    internal static class Table_serverRoom
+    {
+        public static string main = "ServerRoomLog";
+        public static string visitDate = "visitDate";
+        public static string visitTime = "visitTime";
+        public static string visitor = "visitor";
+        public static string purpose = "purpose";
+        public static string actions = "actions";
+        public static string accompaniedBy = "accompaniedBy";
+    }
+
+    internal static class ModulesSchema
+    {
+        public static async Task EnsureAsync(SQLiteConnection db)
         {
-            InitializeComponent();
-            Text = "Журнал посещений серверной";
-            FormBorderStyle = FormBorderStyle.None;
-            StartPosition = FormStartPosition.CenterScreen;
-            Size = new Size(980, 620);
-            BackColor = Color.FromArgb(24, 28, 36);
-            ForeColor = Color.White;
-            Font = new Font("Arial", 10);
-
-            Label title = new Label
-            {
-                Text = "Журнал посещений серверной",
-                Font = new Font("Arial", 16, FontStyle.Bold),
-                ForeColor = Color.White,
-                Location = new Point(20, 12),
-                AutoSize = true
-            };
-            Controls.Add(title);
-            title.MouseDown += Drag;
-
-            Button close = MakeButton("Закрыть", 860, 12, 100, 32);
-            close.Click += (s, e) => ReturnBack();
-            Controls.Add(close);
-
-            grid = new DataGridView
-            {
-                Location = new Point(20, 56),
-                Size = new Size(940, 320),
-                ReadOnly = true,
-                AllowUserToAddRows = false,
-                SelectionMode = DataGridViewSelectionMode.FullRowSelect,
-                BackgroundColor = Color.FromArgb(36, 42, 54),
-                BorderStyle = BorderStyle.None,
-                AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill
-            };
-            grid.Columns.Add("id", "ID");
-            grid.Columns.Add("visitDate", "Дата");
-            grid.Columns.Add("visitTime", "Время");
-            grid.Columns.Add("visitor", "Кто вошёл");
-            grid.Columns.Add("purpose", "Зачем");
-            grid.Columns.Add("actions", "Что сделано");
-            grid.Columns.Add("accompanied", "Сопровождал");
-            grid.Columns["id"].Visible = false;
-            Controls.Add(grid);
-
-            tbVisitor = AddField("Кто вошёл", 20, 390);
-            tbPurpose = AddField("Зачем", 250, 390);
-            tbActions = AddField("Что сделано", 480, 390);
-            tbAccompanied = AddField("Сопровождал", 710, 390);
-            Label l = new Label { Text = "Дата и время", Location = new Point(20, 460), AutoSize = true, ForeColor = Color.Gainsboro };
-            dtVisit = new DateTimePicker { Location = new Point(20, 482), Width = 210, Format = DateTimePickerFormat.Custom, CustomFormat = "dd.MM.yyyy HH:mm" };
-            Controls.Add(l);
-            Controls.Add(dtVisit);
-
-            Button add = MakeButton("Записать визит", 250, 476, 160, 36);
-            add.Click += async (s, e) => await AddRow();
-            Button del = MakeButton("Удалить", 420, 476, 140, 36);
-            del.Click += async (s, e) => await DeleteRow();
-            Button refresh = MakeButton("Обновить", 570, 476, 140, 36);
-            refresh.Click += (s, e) => LoadRows();
-            Controls.Add(add);
-            Controls.Add(del);
-            Controls.Add(refresh);
-
-            Load += async (s, e) =>
-            {
-                DB = new SQLiteConnection(Database.connectionString);
-                await DB.OpenAsync();
-                await ModulesSchema.EnsureAsync(DB);
-                if (DataUsers.GroupUser == "WORKER")
-                {
-                    tbVisitor.Text = DataUsers.Initials;
-                }
-                LoadRows();
-            };
-            MouseDown += Drag;
-        }
-
-        private TextBox AddField(string caption, int x, int y)
-        {
-            Label l = new Label { Text = caption, Location = new Point(x, y), AutoSize = true, ForeColor = Color.Gainsboro };
-            TextBox t = new TextBox { Location = new Point(x, y + 22), Width = 210 };
-            Controls.Add(l);
-            Controls.Add(t);
-            return t;
-        }
-
-        private Button MakeButton(string text, int x, int y, int w, int h)
-        {
-            return new Button
-            {
-                Text = text,
-                Location = new Point(x, y),
-                Size = new Size(w, h),
-                FlatStyle = FlatStyle.Flat,
-                BackColor = Color.FromArgb(0, 116, 228),
-                ForeColor = Color.White
-            };
-        }
-
-        private async void LoadRows()
-        {
-            grid.Rows.Clear();
-            SQLiteCommand command = new SQLiteCommand($"SELECT * FROM [{Table_serverRoom.main}] ORDER BY ID DESC", DB);
-            SQLiteDataReader reader = null;
-            try
-            {
-                reader = (SQLiteDataReader)await command.ExecuteReaderAsync();
-                while (await reader.ReadAsync())
-                {
-                    grid.Rows.Add(
-                        reader["ID"].ToString(),
-                        reader[Table_serverRoom.visitDate].ToString(),
-                        reader[Table_serverRoom.visitTime].ToString(),
-                        reader[Table_serverRoom.visitor].ToString(),
-                        reader[Table_serverRoom.purpose].ToString(),
-                        reader[Table_serverRoom.actions].ToString(),
-                        reader[Table_serverRoom.accompaniedBy].ToString());
-                }
-            }
-            catch (Exception ex)
-            {
-                MessageBoxUI.Show(ex.Message, "Серверная", "Error");
-            }
-            finally
-            {
-                reader?.Close();
-            }
-        }
-
-        private async System.Threading.Tasks.Task AddRow()
-        {
-            if (tbVisitor.Text.Trim() == "" || tbPurpose.Text.Trim() == "")
-            {
-                MessageBoxUI.Show("Укажите, кто вошёл и зачем.", "Серверная", "Error");
-                return;
-            }
-            SQLiteCommand command = new SQLiteCommand(
-                $"INSERT INTO {Table_serverRoom.main} ({Table_serverRoom.visitDate}, {Table_serverRoom.visitTime}, {Table_serverRoom.visitor}, {Table_serverRoom.purpose}, {Table_serverRoom.actions}, {Table_serverRoom.accompaniedBy}) VALUES (@d, @t, @v, @p, @a, @c)", DB);
-            command.Parameters.AddWithValue("d", dtVisit.Value.ToString("dd.MM.yyyy"));
-            command.Parameters.AddWithValue("t", dtVisit.Value.ToString("HH:mm"));
-            command.Parameters.AddWithValue("v", tbVisitor.Text.Trim());
-            command.Parameters.AddWithValue("p", tbPurpose.Text.Trim());
-            command.Parameters.AddWithValue("a", tbActions.Text.Trim());
-            command.Parameters.AddWithValue("c", tbAccompanied.Text.Trim());
+            SQLiteCommand command = new SQLiteCommand(@"
+CREATE TABLE IF NOT EXISTS Contracts (
+    ID INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+    equipment TEXT NOT NULL,
+    invNum TEXT,
+    supplier TEXT NOT NULL,
+    contractNumber TEXT NOT NULL,
+    contractDate TEXT,
+    warrantyUntil TEXT,
+    supportUntil TEXT,
+    comment TEXT
+);
+CREATE TABLE IF NOT EXISTS ServerRoomLog (
+    ID INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+    visitDate TEXT NOT NULL,
+    visitTime TEXT NOT NULL,
+    visitor TEXT NOT NULL,
+    purpose TEXT NOT NULL,
+    actions TEXT,
+    accompaniedBy TEXT
+);", db);
             await command.ExecuteNonQueryAsync();
-            File.AppendAllText(Logs.file, $"[Серверная]{DataUsers.Initials} записал визит {tbVisitor.Text.Trim()} ({thisDay:dd.MM.yyyy HH:mm}){Environment.NewLine}");
-            tbPurpose.Clear();
-            tbActions.Clear();
-            tbAccompanied.Clear();
-            LoadRows();
-        }
-
-        private async System.Threading.Tasks.Task DeleteRow()
-        {
-            if (DataUsers.GroupUser != "ADMIN")
-            {
-                MessageBoxUI.Show("Удалять записи журнала может только ADMIN.", "Серверная", "Error");
-                return;
-            }
-            if (grid.SelectedRows.Count == 0)
-            {
-                return;
-            }
-            string id = grid.SelectedRows[0].Cells["id"].Value.ToString();
-            SQLiteCommand command = new SQLiteCommand($"DELETE FROM {Table_serverRoom.main} WHERE ID = @id", DB);
-            command.Parameters.AddWithValue("id", id);
-            await command.ExecuteNonQueryAsync();
-            File.AppendAllText(Logs.file, $"[Серверная]{DataUsers.Initials} удалил визит ID {id} ({thisDay:dd.MM.yyyy HH:mm}){Environment.NewLine}");
-            LoadRows();
-        }
-
-        private void ReturnBack()
-        {
-            Form next = DataUsers.GroupUser == "ADMIN" ? (Form)new MainAdminForm() : new MainWorkerForm();
-            next.Show();
-            next.FormClosed += (s, e) => Close();
-            Hide();
-        }
-
-        private void Drag(object sender, MouseEventArgs e)
-        {
-            if (e.Button == MouseButtons.Left)
-            {
-                Capture = false;
-                Message m = Message.Create(Handle, 0xA1, new IntPtr(2), IntPtr.Zero);
-                WndProc(ref m);
-            }
         }
     }
 }
