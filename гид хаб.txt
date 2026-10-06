@@ -1,58 +1,227 @@
+using System;
 using System.Data.SQLite;
-using System.Threading.Tasks;
+using System.Drawing;
+using System.IO;
+using System.Windows.Forms;
 
-namespace SupportDesk
+namespace SupportDesk.forms
 {
-    internal static class Table_contracts
+    /// <summary>
+    /// Договоры и гарантии. Не дублирует Inventory: там место и количество, здесь контрагент и сроки.
+    /// </summary>
+    public partial class ContractsForm : Form
     {
-        public static string main = "Contracts";
-        public static string equipment = "equipment";
-        public static string invNum = "invNum";
-        public static string supplier = "supplier";
-        public static string contractNumber = "contractNumber";
-        public static string contractDate = "contractDate";
-        public static string warrantyUntil = "warrantyUntil";
-        public static string supportUntil = "supportUntil";
-        public static string comment = "comment";
-    }
+        private SQLiteConnection DB;
+        private DataGridView grid;
+        private TextBox tbEquipment, tbInv, tbSupplier, tbNumber, tbComment;
+        private DateTimePicker dtContract, dtWarranty, dtSupport;
+        private readonly DateTime thisDay = DateTime.Now;
 
-    internal static class Table_serverRoom
-    {
-        public static string main = "ServerRoomLog";
-        public static string visitDate = "visitDate";
-        public static string visitTime = "visitTime";
-        public static string visitor = "visitor";
-        public static string purpose = "purpose";
-        public static string actions = "actions";
-        public static string accompaniedBy = "accompaniedBy";
-    }
-
-    internal static class NewModulesSchema
-    {
-        public static async Task EnsureAsync(SQLiteConnection db)
+        public ContractsForm()
         {
-            SQLiteCommand command = new SQLiteCommand(@"
-CREATE TABLE IF NOT EXISTS Contracts (
-    ID INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-    equipment TEXT NOT NULL,
-    invNum TEXT,
-    supplier TEXT NOT NULL,
-    contractNumber TEXT NOT NULL,
-    contractDate TEXT,
-    warrantyUntil TEXT,
-    supportUntil TEXT,
-    comment TEXT
-);
-CREATE TABLE IF NOT EXISTS ServerRoomLog (
-    ID INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-    visitDate TEXT NOT NULL,
-    visitTime TEXT NOT NULL,
-    visitor TEXT NOT NULL,
-    purpose TEXT NOT NULL,
-    actions TEXT,
-    accompaniedBy TEXT
-);", db);
+            InitializeComponent();
+            Text = "Договоры и гарантии";
+            FormBorderStyle = FormBorderStyle.None;
+            StartPosition = FormStartPosition.CenterScreen;
+            Size = new Size(980, 640);
+            BackColor = Color.FromArgb(24, 28, 36);
+            ForeColor = Color.White;
+            Font = new Font("Arial", 10);
+
+            Label title = new Label
+            {
+                Text = "Договоры и гарантии",
+                Font = new Font("Arial", 16, FontStyle.Bold),
+                ForeColor = Color.White,
+                Location = new Point(20, 12),
+                AutoSize = true
+            };
+            Controls.Add(title);
+            title.MouseDown += Drag;
+
+            Button close = MakeButton("Закрыть", 860, 12, 100, 32);
+            close.Click += (s, e) => ReturnBack();
+            Controls.Add(close);
+
+            grid = new DataGridView
+            {
+                Location = new Point(20, 56),
+                Size = new Size(940, 300),
+                ReadOnly = true,
+                AllowUserToAddRows = false,
+                SelectionMode = DataGridViewSelectionMode.FullRowSelect,
+                BackgroundColor = Color.FromArgb(36, 42, 54),
+                BorderStyle = BorderStyle.None,
+                AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill
+            };
+            grid.Columns.Add("id", "ID");
+            grid.Columns.Add("equipment", "Оборудование");
+            grid.Columns.Add("inv", "Инв. номер");
+            grid.Columns.Add("supplier", "Поставщик");
+            grid.Columns.Add("number", "Договор");
+            grid.Columns.Add("contractDate", "Дата договора");
+            grid.Columns.Add("warranty", "Гарантия до");
+            grid.Columns.Add("support", "Поддержка до");
+            grid.Columns.Add("comment", "Комментарий");
+            grid.Columns["id"].Visible = false;
+            Controls.Add(grid);
+
+            int y = 372;
+            tbEquipment = AddField("Оборудование", 20, y);
+            tbInv = AddField("Инв. номер", 250, y);
+            tbSupplier = AddField("Поставщик", 480, y);
+            tbNumber = AddField("№ договора", 710, y);
+            dtContract = AddDate("Дата договора", 20, y + 70);
+            dtWarranty = AddDate("Гарантия до", 250, y + 70);
+            dtSupport = AddDate("Поддержка до", 480, y + 70);
+            tbComment = AddField("Комментарий", 710, y + 70);
+
+            Button add = MakeButton("Добавить", 20, 580, 140, 36);
+            add.Click += async (s, e) => await AddRow();
+            Button del = MakeButton("Удалить", 170, 580, 140, 36);
+            del.Click += async (s, e) => await DeleteRow();
+            Button refresh = MakeButton("Обновить", 320, 580, 140, 36);
+            refresh.Click += (s, e) => LoadRows();
+            Controls.Add(add);
+            Controls.Add(del);
+            Controls.Add(refresh);
+
+            Load += async (s, e) =>
+            {
+                DB = new SQLiteConnection(Database.connectionString);
+                await DB.OpenAsync();
+                await ModulesSchema.EnsureAsync(DB);
+                LoadRows();
+            };
+            MouseDown += Drag;
+        }
+
+        private TextBox AddField(string caption, int x, int y)
+        {
+            Label l = new Label { Text = caption, Location = new Point(x, y), AutoSize = true, ForeColor = Color.Gainsboro };
+            TextBox t = new TextBox { Location = new Point(x, y + 22), Width = 210 };
+            Controls.Add(l);
+            Controls.Add(t);
+            return t;
+        }
+
+        private DateTimePicker AddDate(string caption, int x, int y)
+        {
+            Label l = new Label { Text = caption, Location = new Point(x, y), AutoSize = true, ForeColor = Color.Gainsboro };
+            DateTimePicker d = new DateTimePicker { Location = new Point(x, y + 22), Width = 210, Format = DateTimePickerFormat.Short };
+            Controls.Add(l);
+            Controls.Add(d);
+            return d;
+        }
+
+        private Button MakeButton(string text, int x, int y, int w, int h)
+        {
+            return new Button
+            {
+                Text = text,
+                Location = new Point(x, y),
+                Size = new Size(w, h),
+                FlatStyle = FlatStyle.Flat,
+                BackColor = Color.FromArgb(0, 116, 228),
+                ForeColor = Color.White
+            };
+        }
+
+        private async void LoadRows()
+        {
+            grid.Rows.Clear();
+            SQLiteCommand command = new SQLiteCommand($"SELECT * FROM [{Table_contracts.main}] ORDER BY ID DESC", DB);
+            SQLiteDataReader reader = null;
+            try
+            {
+                reader = (SQLiteDataReader)await command.ExecuteReaderAsync();
+                while (await reader.ReadAsync())
+                {
+                    grid.Rows.Add(
+                        reader["ID"].ToString(),
+                        reader[Table_contracts.equipment].ToString(),
+                        reader[Table_contracts.invNum].ToString(),
+                        reader[Table_contracts.supplier].ToString(),
+                        reader[Table_contracts.contractNumber].ToString(),
+                        reader[Table_contracts.contractDate].ToString(),
+                        reader[Table_contracts.warrantyUntil].ToString(),
+                        reader[Table_contracts.supportUntil].ToString(),
+                        reader[Table_contracts.comment].ToString());
+                    string warranty = reader[Table_contracts.warrantyUntil].ToString();
+                    DateTime parsed;
+                    if (DateTime.TryParse(warranty, out parsed) && parsed.Date < thisDay.Date)
+                    {
+                        grid.Rows[grid.Rows.Count - 1].DefaultCellStyle.BackColor = Color.MistyRose;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBoxUI.Show(ex.Message, "Договоры", "Error");
+            }
+            finally
+            {
+                reader?.Close();
+            }
+        }
+
+        private async System.Threading.Tasks.Task AddRow()
+        {
+            if (tbEquipment.Text.Trim() == "" || tbSupplier.Text.Trim() == "" || tbNumber.Text.Trim() == "")
+            {
+                MessageBoxUI.Show("Заполните оборудование, поставщика и номер договора.", "Договоры", "Error");
+                return;
+            }
+            SQLiteCommand command = new SQLiteCommand(
+                $"INSERT INTO {Table_contracts.main} ({Table_contracts.equipment}, {Table_contracts.invNum}, {Table_contracts.supplier}, {Table_contracts.contractNumber}, {Table_contracts.contractDate}, {Table_contracts.warrantyUntil}, {Table_contracts.supportUntil}, {Table_contracts.comment}) VALUES (@e, @i, @s, @n, @cd, @w, @su, @c)", DB);
+            command.Parameters.AddWithValue("e", tbEquipment.Text.Trim());
+            command.Parameters.AddWithValue("i", tbInv.Text.Trim());
+            command.Parameters.AddWithValue("s", tbSupplier.Text.Trim());
+            command.Parameters.AddWithValue("n", tbNumber.Text.Trim());
+            command.Parameters.AddWithValue("cd", dtContract.Value.ToString("dd.MM.yyyy"));
+            command.Parameters.AddWithValue("w", dtWarranty.Value.ToString("dd.MM.yyyy"));
+            command.Parameters.AddWithValue("su", dtSupport.Value.ToString("dd.MM.yyyy"));
+            command.Parameters.AddWithValue("c", tbComment.Text.Trim());
             await command.ExecuteNonQueryAsync();
+            File.AppendAllText(Logs.file, $"[Договоры]{DataUsers.Initials} добавил договор {tbNumber.Text.Trim()} ({thisDay:dd.MM.yyyy HH:mm}){Environment.NewLine}");
+            tbEquipment.Clear();
+            tbInv.Clear();
+            tbSupplier.Clear();
+            tbNumber.Clear();
+            tbComment.Clear();
+            LoadRows();
+        }
+
+        private async System.Threading.Tasks.Task DeleteRow()
+        {
+            if (grid.SelectedRows.Count == 0)
+            {
+                return;
+            }
+            string id = grid.SelectedRows[0].Cells["id"].Value.ToString();
+            SQLiteCommand command = new SQLiteCommand($"DELETE FROM {Table_contracts.main} WHERE ID = @id", DB);
+            command.Parameters.AddWithValue("id", id);
+            await command.ExecuteNonQueryAsync();
+            File.AppendAllText(Logs.file, $"[Договоры]{DataUsers.Initials} удалил договор ID {id} ({thisDay:dd.MM.yyyy HH:mm}){Environment.NewLine}");
+            LoadRows();
+        }
+
+        private void ReturnBack()
+        {
+            Form next = DataUsers.GroupUser == "ADMIN" ? (Form)new MainAdminForm() : new MainWorkerForm();
+            next.Show();
+            next.FormClosed += (s, e) => Close();
+            Hide();
+        }
+
+        private void Drag(object sender, MouseEventArgs e)
+        {
+            if (e.Button == MouseButtons.Left)
+            {
+                Capture = false;
+                Message m = Message.Create(Handle, 0xA1, new IntPtr(2), IntPtr.Zero);
+                WndProc(ref m);
+            }
         }
     }
 }
