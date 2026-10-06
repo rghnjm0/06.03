@@ -1,7 +1,7 @@
 using System.Data.SQLite;
 using System.Threading.Tasks;
 
-namespace SupportDesk
+namespace SupportDesk.forms
 {
     internal static class Table_contracts
     {
@@ -27,11 +27,15 @@ namespace SupportDesk
         public static string accompaniedBy = "accompaniedBy";
     }
 
-    internal static class ModulesSchema
+    public static class ModulesSchema
     {
         public static async Task EnsureAsync(SQLiteConnection db)
         {
-            SQLiteCommand command = new SQLiteCommand(@"
+            if (db == null)
+            {
+                return;
+            }
+            using (SQLiteCommand command = new SQLiteCommand(@"
 CREATE TABLE IF NOT EXISTS Contracts (
     ID INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
     equipment TEXT NOT NULL,
@@ -51,8 +55,10 @@ CREATE TABLE IF NOT EXISTS ServerRoomLog (
     purpose TEXT NOT NULL,
     actions TEXT,
     accompaniedBy TEXT
-);", db);
-            await command.ExecuteNonQueryAsync();
+);", db))
+            {
+                await command.ExecuteNonQueryAsync();
+            }
         }
     }
 }
