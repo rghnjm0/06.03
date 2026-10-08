@@ -1,0 +1,90 @@
+// MainAdminForm — замени метод AddNewModuleButtons целиком (+ добавь CreateSideMenuButton)
+
+
+        private void AddNewModuleButtons()
+        {
+            Panel side = null;
+            Control after = null;
+            foreach (Control c in Controls)
+            {
+                if (c is Panel p && p.Name == "panel1")
+                {
+                    side = p;
+                    break;
+                }
+            }
+            if (side == null)
+            {
+                return;
+            }
+
+            foreach (Control c in side.Controls)
+            {
+                if (c is ExpUI.dll.ExpUIButton b && b.Text != null && b.Text.IndexOf("Отчет", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    after = b;
+                    break;
+                }
+            }
+            if (after == null)
+            {
+                int maxY = -1;
+                foreach (Control c in side.Controls)
+                {
+                    if (c is ExpUI.dll.ExpUIButton b && b.Width >= 180 && b.Location.Y > maxY)
+                    {
+                        maxY = b.Location.Y;
+                        after = b;
+                    }
+                }
+            }
+
+            int startY = after != null ? after.Location.Y + 45 : 690;
+            if (side.Height < startY + 90)
+            {
+                side.AutoScroll = true;
+            }
+
+            ExpUI.dll.ExpUIButton btnWarranty = CreateSideMenuButton("Договоры", startY);
+            btnWarranty.Click += (s, ev) =>
+            {
+                Form f = new WarrantyContractsForm();
+                f.Show();
+                f.FormClosed += new FormClosedEventHandler(MainForm_FormClosed);
+                Hide();
+            };
+            ExpUI.dll.ExpUIButton btnServer = CreateSideMenuButton("Серверная", startY + 45);
+            btnServer.Click += (s, ev) =>
+            {
+                Form f = new ServerAccessLogForm();
+                f.Show();
+                f.FormClosed += new FormClosedEventHandler(MainForm_FormClosed);
+                Hide();
+            };
+            side.Controls.Add(btnWarranty);
+            side.Controls.Add(btnServer);
+            btnWarranty.BringToFront();
+            btnServer.BringToFront();
+        }
+
+        private ExpUI.dll.ExpUIButton CreateSideMenuButton(string text, int y)
+        {
+            ExpUI.dll.ExpUIButton btn = new ExpUI.dll.ExpUIButton();
+            btn.BackColor = Color.FromArgb(0, 116, 228);
+            btn.BorderSize = 1;
+            btn.ClickColor = Color.FromArgb(80, 255, 255, 255);
+            btn.ColorTextForBorder = Color.White;
+            btn.Cursor = Cursors.Hand;
+            btn.DisableColor = Color.FromArgb(80, 255, 255, 255);
+            btn.Font = new Font("Arial", 9.75F, FontStyle.Bold);
+            btn.ForeColor = Color.White;
+            btn.HoverColor = Color.FromArgb(25, 0, 0, 0);
+            btn.Location = new Point(0, y);
+            btn.Size = new Size(200, 35);
+            btn.StyleButton = ExpUI.dll.ExpUIButton.styleButton.Standart;
+            btn.Text = text;
+            btn.TextAlign = ExpUI.dll.ExpUIButton.textAlign.MiddleRight;
+            btn.ResponsiveText = true;
+            btn.ResponsiveFontOn = new Font("Arial", 12F, FontStyle.Bold);
+            return btn;
+        }
