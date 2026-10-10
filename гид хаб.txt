@@ -11,34 +11,44 @@ private void AddNewModuleButtons()
     }
     if (side == null) return;
 
-    // Ползунок выключаем
-    side.AutoScroll = false;
+    side.AutoScroll = true; // ползунок оставляем
 
-    // Ищем «Отчет по задачам»
     ExpUI.dll.ExpUIButton reportBtn = null;
+    int maxBtnBottom = 0;
     foreach (Control c in side.Controls)
     {
-        if (c is ExpUI.dll.ExpUIButton b && b.Text != null &&
-            b.Text.IndexOf("Отчет", StringComparison.OrdinalIgnoreCase) >= 0)
+        if (c is ExpUI.dll.ExpUIButton b && b.Width >= 180)
         {
-            reportBtn = b;
-            break;
+            int bottom = b.Location.Y + b.Height;
+            if (bottom > maxBtnBottom) maxBtnBottom = bottom;
+
+            if (b.Text != null && b.Text.IndexOf("Отчет", StringComparison.OrdinalIgnoreCase) >= 0)
+                reportBtn = b;
         }
     }
-    if (reportBtn == null) return;
 
-    int btnH = 35;
-    int gap = 45;
-    int y = reportBtn.Location.Y + gap; // сразу под отчётом
+    const int gap = 10;
+    const int btnH = 35;
+    int y = reportBtn != null
+        ? reportBtn.Location.Y + reportBtn.Height + gap
+        : maxBtnBottom + gap;
 
-    // Если не влезает — чуть поднимаем «Отчет», чтобы без scroll
-    int needBottom = y + btnH + 5;
-    if (needBottom > side.ClientSize.Height)
+    // если место занято — сдвигаем ниже, пока не будет свободно
+    bool occupied;
+    do
     {
-        int shift = needBottom - side.ClientSize.Height;
-        reportBtn.Location = new Point(reportBtn.Location.X, reportBtn.Location.Y - shift);
-        y = reportBtn.Location.Y + gap;
-    }
+        occupied = false;
+        foreach (Control c in side.Controls)
+        {
+            if (!(c is ExpUI.dll.ExpUIButton) || c.Width < 180) continue;
+            if (y < c.Location.Y + c.Height && y + btnH > c.Location.Y)
+            {
+                y = c.Location.Y + c.Height + gap;
+                occupied = true;
+                break;
+            }
+        }
+    } while (occupied);
 
     ExpUI.dll.ExpUIButton btnServer = CreateSideMenuButton("Серверная", y);
     btnServer.Click += (s, ev) =>
