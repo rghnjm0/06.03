@@ -5,7 +5,6 @@ using System.Windows.Forms;
 
 namespace SupportDesk.forms
 {
-    /// <summary>Только просмотр. Пишет не эта форма, а вход/выход из программы.</summary>
     public partial class ServerAccessLogForm : Form
     {
         private SQLiteConnection DB;
@@ -40,7 +39,7 @@ namespace SupportDesk.forms
 
             statusLabel = new Label
             {
-                Text = "Данные пишутся при входе в программу и при выходе из аккаунта.",
+                Text = "Запись при входе в программу и при выходе из аккаунта.",
                 Location = new Point(20, 48),
                 Size = new Size(900, 22),
                 ForeColor = Color.LightGreen
@@ -63,7 +62,6 @@ namespace SupportDesk.forms
                 EnableHeadersVisualStyles = false,
                 GridColor = Color.FromArgb(60, 70, 85)
             };
-            // Текст всегда белый — иначе на тёмном фоне не видно, пока не наведёшь
             grid.DefaultCellStyle.BackColor = Color.FromArgb(36, 42, 54);
             grid.DefaultCellStyle.ForeColor = Color.White;
             grid.DefaultCellStyle.SelectionBackColor = Color.FromArgb(0, 116, 228);
@@ -71,12 +69,9 @@ namespace SupportDesk.forms
             grid.DefaultCellStyle.Font = new Font("Arial", 10F);
             grid.AlternatingRowsDefaultCellStyle.BackColor = Color.FromArgb(45, 52, 66);
             grid.AlternatingRowsDefaultCellStyle.ForeColor = Color.White;
-            grid.AlternatingRowsDefaultCellStyle.SelectionBackColor = Color.FromArgb(0, 116, 228);
-            grid.AlternatingRowsDefaultCellStyle.SelectionForeColor = Color.White;
             grid.ColumnHeadersDefaultCellStyle.BackColor = Color.FromArgb(0, 116, 228);
             grid.ColumnHeadersDefaultCellStyle.ForeColor = Color.White;
             grid.ColumnHeadersDefaultCellStyle.Font = new Font("Arial", 10F, FontStyle.Bold);
-            grid.ColumnHeadersDefaultCellStyle.SelectionBackColor = Color.FromArgb(0, 116, 228);
             grid.ColumnHeadersHeight = 32;
             grid.RowTemplate.Height = 28;
 
@@ -104,18 +99,17 @@ namespace SupportDesk.forms
                     await DB.OpenAsync();
                     await NewModulesDb.EnsureAsync(DB);
                     LoadRows();
-                    if (grid.Rows.Count == 0)
-                        statusLabel.Text = "Пока пусто. Выйди и зайди в программу заново — должна появиться строка.";
-                    else
-                        statusLabel.Text = "Записей: " + grid.Rows.Count + ". Зелёные — ещё в системе (нет времени выхода).";
+                    statusLabel.Text = grid.Rows.Count == 0
+                        ? "Пока пусто. Войди в программу — строка появится после входа."
+                        : ("Записей: " + grid.Rows.Count);
                 }
                 catch (Exception ex)
                 {
                     statusLabel.ForeColor = Color.OrangeRed;
                     statusLabel.Text = ex.Message;
-                    MessageBox.Show(ex.Message, "Журнал");
                 }
             };
+
             MouseDown += Drag;
         }
 
@@ -123,8 +117,12 @@ namespace SupportDesk.forms
         {
             return new Button
             {
-                Text = text, Location = new Point(x, y), Size = new Size(w, h),
-                FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(0, 116, 228), ForeColor = Color.White
+                Text = text,
+                Location = new Point(x, y),
+                Size = new Size(w, h),
+                FlatStyle = FlatStyle.Flat,
+                BackColor = Color.FromArgb(0, 116, 228),
+                ForeColor = Color.White
             };
         }
 
@@ -149,28 +147,29 @@ namespace SupportDesk.forms
                             reader["enterTime"].ToString(),
                             exitT,
                             Convert.ToString(reader["note"]));
+                        grid.Rows[row].DefaultCellStyle.ForeColor = Color.White;
                         if (string.IsNullOrEmpty(exitT))
-                        {
                             grid.Rows[row].DefaultCellStyle.BackColor = Color.FromArgb(40, 80, 40);
-                            grid.Rows[row].DefaultCellStyle.ForeColor = Color.White;
-                        }
-                        else
-                        {
-                            grid.Rows[row].DefaultCellStyle.ForeColor = Color.White;
-                        }
                     }
                 }
                 catch (Exception ex)
                 {
                     MessageBox.Show(ex.Message, "Журнал");
                 }
-                finally { reader?.Close(); }
+                finally
+                {
+                    if (reader != null) reader.Close();
+                }
             }
         }
 
         private async System.Threading.Tasks.Task DeleteRow()
         {
-            if (DataUsers.GroupUser != "ADMIN") { MessageBoxUI.Show("Только ADMIN.", "Журнал", "Error"); return; }
+            if (DataUsers.GroupUser != "ADMIN")
+            {
+                MessageBox.Show("Удалять может только ADMIN.");
+                return;
+            }
             if (grid.SelectedRows.Count == 0) return;
             string id = grid.SelectedRows[0].Cells["id"].Value.ToString();
             using (SQLiteCommand command = new SQLiteCommand("DELETE FROM ServerRoomVisits WHERE ID=@id", DB))
@@ -183,7 +182,9 @@ namespace SupportDesk.forms
 
         private void ReturnBack()
         {
-            Form next = DataUsers.GroupUser == "ADMIN" ? (Form)new MainAdminForm() : new MainWorkerForm();
+            Form next = DataUsers.GroupUser == "ADMIN"
+                ? (Form)new MainAdminForm()
+                : new MainWorkerForm();
             next.Show();
             next.FormClosed += (s, e) => Close();
             Hide();
