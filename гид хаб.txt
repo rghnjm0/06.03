@@ -1,64 +1,75 @@
-using System.Data.SQLite;
-using System.Threading.Tasks;
-
-namespace SupportDesk.forms
+private void AddNewModuleButtons()
 {
-    internal static class Table_contracts
+    Panel side = null;
+    foreach (Control c in Controls)
     {
-        public static string main = "Contracts";
-        public static string equipment = "equipment";
-        public static string invNum = "invNum";
-        public static string supplier = "supplier";
-        public static string contractNumber = "contractNumber";
-        public static string contractDate = "contractDate";
-        public static string warrantyUntil = "warrantyUntil";
-        public static string supportUntil = "supportUntil";
-        public static string comment = "comment";
-    }
-
-    internal static class Table_serverRoom
-    {
-        public static string main = "ServerRoomLog";
-        public static string visitDate = "visitDate";
-        public static string visitTime = "visitTime";
-        public static string visitor = "visitor";
-        public static string purpose = "purpose";
-        public static string actions = "actions";
-        public static string accompaniedBy = "accompaniedBy";
-    }
-
-    public static class ModulesSchema
-    {
-        public static async Task EnsureAsync(SQLiteConnection db)
+        if (c is Panel p && p.Name == "panel1")
         {
-            if (db == null)
-            {
-                return;
-            }
-            using (SQLiteCommand command = new SQLiteCommand(@"
-CREATE TABLE IF NOT EXISTS Contracts (
-    ID INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-    equipment TEXT NOT NULL,
-    invNum TEXT,
-    supplier TEXT NOT NULL,
-    contractNumber TEXT NOT NULL,
-    contractDate TEXT,
-    warrantyUntil TEXT,
-    supportUntil TEXT,
-    comment TEXT
-);
-CREATE TABLE IF NOT EXISTS ServerRoomLog (
-    ID INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-    visitDate TEXT NOT NULL,
-    visitTime TEXT NOT NULL,
-    visitor TEXT NOT NULL,
-    purpose TEXT NOT NULL,
-    actions TEXT,
-    accompaniedBy TEXT
-);", db))
-            {
-                await command.ExecuteNonQueryAsync();
-            }
+            side = p;
+            break;
         }
     }
+    if (side == null) return;
+
+    // Ползунок выключаем
+    side.AutoScroll = false;
+
+    // Ищем «Отчет по задачам»
+    ExpUI.dll.ExpUIButton reportBtn = null;
+    foreach (Control c in side.Controls)
+    {
+        if (c is ExpUI.dll.ExpUIButton b && b.Text != null &&
+            b.Text.IndexOf("Отчет", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            reportBtn = b;
+            break;
+        }
+    }
+    if (reportBtn == null) return;
+
+    int btnH = 35;
+    int gap = 45;
+    int y = reportBtn.Location.Y + gap; // сразу под отчётом
+
+    // Если не влезает — чуть поднимаем «Отчет», чтобы без scroll
+    int needBottom = y + btnH + 5;
+    if (needBottom > side.ClientSize.Height)
+    {
+        int shift = needBottom - side.ClientSize.Height;
+        reportBtn.Location = new Point(reportBtn.Location.X, reportBtn.Location.Y - shift);
+        y = reportBtn.Location.Y + gap;
+    }
+
+    ExpUI.dll.ExpUIButton btnServer = CreateSideMenuButton("Серверная", y);
+    btnServer.Click += (s, ev) =>
+    {
+        Form f = new ServerAccessLogForm();
+        f.Show();
+        f.FormClosed += new FormClosedEventHandler(MainForm_FormClosed);
+        Hide();
+    };
+    side.Controls.Add(btnServer);
+    btnServer.BringToFront();
+}
+
+private ExpUI.dll.ExpUIButton CreateSideMenuButton(string text, int y)
+{
+    ExpUI.dll.ExpUIButton btn = new ExpUI.dll.ExpUIButton();
+    btn.BackColor = Color.FromArgb(0, 116, 228);
+    btn.BorderSize = 1;
+    btn.ClickColor = Color.FromArgb(80, 255, 255, 255);
+    btn.ColorTextForBorder = Color.White;
+    btn.Cursor = Cursors.Hand;
+    btn.DisableColor = Color.FromArgb(80, 255, 255, 255);
+    btn.Font = new Font("Arial", 9.75F, FontStyle.Bold);
+    btn.ForeColor = Color.White;
+    btn.HoverColor = Color.FromArgb(25, 0, 0, 0);
+    btn.Location = new Point(0, y);
+    btn.Size = new Size(200, 35);
+    btn.StyleButton = ExpUI.dll.ExpUIButton.styleButton.Standart;
+    btn.Text = text;
+    btn.TextAlign = ExpUI.dll.ExpUIButton.textAlign.MiddleRight;
+    btn.ResponsiveText = true;
+    btn.ResponsiveFontOn = new Font("Arial", 12F, FontStyle.Bold);
+    return btn;
 }
