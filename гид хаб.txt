@@ -1,500 +1,67 @@
-# Инструкция для «Гостиницы» (код `hotel`)
+Часть 2. Сторона сокурсника (Гостиница)
+Дай ему этот код. Ему нужно добавить две функции в его hotel_agent.py (или agent.py) и прописать их в словаре _HANDLERS (или HANDLERS).
 
-Полностью симметрично тому, что ты сделал у себя. Раздел разбит на части:
+1. Функция проверки свободных номеров:
 
-- **A. Общее описание** — что должна уметь гостиница.
-- **B. Если гостиница на Flask** — встраивание прямо в существующий проект.
-- **C. Если на другом стеке** — отдельный `agent.py`.
-- **D. Отправка запроса в ресторан** (бронь стола).
-- **E. Чтение снимка ресторана** (показать свободные столы).
-- **F. Проверка связности.**
+python
+def handle_room_availability(req):
+    """Узнать свободные номера на дату."""
+    p = req.get("payload", {}) or {}
+    date_str = p.get("date") or datetime.now().strftime("%Y-%m-%d")
 
-Дай сокурснику этот текст целиком.
-
----
-
-## A. Что должна уметь гостиница
-
-| Роль | Что делает | Куда |
-|---|---|---|
-| **Сервер** | Обрабатывает `ping`, `guest_lookup` | Читает `exchange/requests/hotel/`, отвечает в `exchange/responses/<from>/` |
-| **Клиент** | Бронирует стол в ресторане (`reserve_table`) | Пишет в `exchange/requests/gurman/`, ждёт `exchange/responses/hotel/<rid>.json` |
-| **Публикатор** | Раз в 2 минуты пишет снимок о себе | `exchange/snapshots/hotel.json` |
-| **Читатель** | Читает снимок ресторана | `exchange/snapshots/gurman.json` |
-
-Все четыре роли **независимы**. Можно сделать их все сразу, можно по одной.
-
----
-
-## B. Если гостиница уже на Flask — встраивание
-
-### B.1. `config.py` (у гостиницы)
-
-```python
-import os
-
-class Config:
-    # ... существующие настройки ...
-
-    BUS_ROOT = os.environ.get(
-        "BUS_ROOT",
-        r"\\192.168.3.250\Veda\4 Курс\ИСП 44\06 03\exchange",
-    )
-    BUS_SNAPSHOT_INTERVAL = 120     # раз в 2 минуты
-    BUS_REQUEST_TIMEOUT = 30        # секунд ожидания ответа
-    HOTEL_NAME = "Гостиница «Уют»"
-```
-
-### B.2. `services/integrations/hotel_agent.py` — новый файл
-
-Полностью повторяет структуру `gurman_agent.py`, но с логикой гостиницы.
-
-```python
-"""Фоновый агент гостиницы.
-
-  * читает requests/hotel/ и отвечает в responses/<from>/;
-  * раз в BUS_SNAPSHOT_INTERVAL публикует snapshots/hotel.json.
-
-Запускается из app.py через start(app).
-"""
-import json
-import os
-import sqlite3
-import threading
-import time
-import uuid
-from datetime import datetime
-from pathlib import Path
-
-from flask import current_app
-
-
-MY_CODE = "hotel"
-_thread = None
-_stop = threading.Event()
-
-
-def _log(msg: str) -> None:
-    try:
-        current_app.logger.info("[bus] %s", msg)
-    except Exception:
-        pass
-
-
-def _atomic_write(target: Path, data: dict) -> None:
-    tmp_dir = target.parent.parent.parent / "tmp"
-    tmp_dir.mkdir(parents=True, exist_ok=True)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    tmp = tmp_dir / f"{target.name}.{uuid.uuid4().hex}.tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, target)
-
-
-def _db_query(sql: str, params=()) -> list[dict]:
-    """Заменить на свою БД. Сейчас — пример с SQLite."""
-    db = current_app.config.get("DATABASE")
-    if not db:
-        return []
-    conn = sqlite3.connect(str(db), timeout=5.0)
-    conn.row_factory = sqlite3.Row
-    try:
-        return [dict(r) for r in conn.execute(sql, params).fetchall()]
-    finally:
-        conn.close()
-
-
-# ---------------------------------------------------------------------------
-# Обработчики входящих
-# ---------------------------------------------------------------------------
-def _h_ping(req):
-    return {"status": "ok", "service": MY_CODE,
-            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
-
-
-def _h_guest_lookup(req):
-    """Поиск гостя по ФИО. Заменить на свою БД."""
-    name = (req.get("payload", {}).get("guest_name") or "").strip()
-    if not name:
-        return {"found": False, "error": "guest_name обязателен"}
-
-    # ПРИМЕР. Замени на реальную таблицу своей БД.
-    rows = _db_query(
-        "SELECT room, full_name, vip FROM guests "
-        "WHERE full_name LIKE ? LIMIT 1",
-        (f"%{name}%",),
-    )
-    if not rows:
-        return {"found": False, "guest_name": name}
-    g = rows[0]
+    # ТУТ — его логика запроса к БД гостиницы.
+    # Пример-заглушка:
     return {
-        "found": True,
-        "guest_name": g["full_name"],
-        "room": g["room"],
-        "vip": bool(g.get("vip", 0)),
+        "status": "ok",
+        "date": date_str,
+        "free_rooms": 5,               # сколько всего свободно
+        "available_types": ["standard", "lux"]  # какие типы есть
     }
+2. Функция бронирования номера:
 
+python
+def handle_book_room(req):
+    """Забронировать конкретный номер."""
+    p = req.get("payload", {}) or {}
+    guest_name = p.get("guest_name", "Неизвестный гость")
+    room_type = p.get("room_type", "standard")
+    date_str = p.get("date", "")
 
+    if not date_str:
+        return {"status": "error", "error": "Не указана дата заезда"}
+
+    # ТУТ — его логика записи в БД гостиницы.
+    # Пример-заглушка:
+    room_number = "204"  # выдали гостю номер
+    
+    return {
+        "status": "ok",
+        "booked": True,
+        "room_number": room_number,
+        "room_type": room_type,
+        "guest_name": guest_name,
+        "booking_id": f"ROOM-{int(time.time())}"
+    }
+3. Регистрация в словаре (у него в файле):
+
+python
 _HANDLERS = {
     "ping": _h_ping,
     "guest_lookup": _h_guest_lookup,
+    "room_availability": handle_room_availability, # <-- ДОБАВИТЬ
+    "book_room": handle_book_room,                 # <-- ДОБАВИТЬ
 }
+И не забыть импортировать time, если он еще не импортирован.
 
+Как это будет работать
+Ты заходишь в раздел «Интеграции».
 
-# ---------------------------------------------------------------------------
-# Обработка одного запроса
-# ---------------------------------------------------------------------------
-def _process_request(root: Path, req_file: Path) -> None:
-    try:
-        with open(req_file, "r", encoding="utf-8") as f:
-            req = json.load(f)
-    except (json.JSONDecodeError, OSError) as e:
-        _log(f"не смог прочитать {req_file.name}: {e}")
-        return
+Выбираешь Сервис: Гостиница.
 
-    rid = req.get("request_id") or req_file.stem
-    req_type = req.get("type", "")
-    sender = req.get("from", "?")
-    _log(f"вход ← {sender}/{req_type} id={rid}")
+Выбираешь Тип: Свободные номера.
 
-    handler = _HANDLERS.get(req_type)
-    try:
-        if handler:
-            payload = handler(req)
-            status = "error" if payload.get("status") == "error" else "ok"
-        else:
-            payload = {"error": f"Неизвестный тип: {req_type}"}
-            status = "error"
-    except Exception as e:
-        _log(f"ошибка {req_type}: {e}")
-        payload = {"error": str(e)}
-        status = "error"
+В JSON автоматически подставится {"date": "2026-10-21"}. Нажимаешь «Отправить».
 
-    resp = {
-        "request_id": rid,
-        "from": MY_CODE,
-        "to": sender,
-        "status": status,
-        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "payload": payload,
-    }
-    _atomic_write(root / "responses" / sender / f"{rid}.json", resp)
-    _log(f"ответ → {sender}/{status} id={rid}")
+Через секунду обновляешь страницу, в таблице «Исходящие запросы» появляется ответ: {"status": "ok", "free_rooms": 5, "available_types": ["standard", "lux"]}.
 
-    proc = root / "processed" / MY_CODE
-    proc.mkdir(parents=True, exist_ok=True)
-    try:
-        os.replace(req_file, proc / req_file.name)
-    except OSError:
-        pass
-
-
-# ---------------------------------------------------------------------------
-# Публикация snapshot
-# ---------------------------------------------------------------------------
-def _publish_snapshot(root: Path) -> None:
-    # ПРИМЕР. Замени на свои таблицы.
-    rooms = _db_query(
-        "SELECT status, COUNT(*) AS cnt FROM rooms GROUP BY status"
-    )
-    counts = {r["status"]: r["cnt"] for r in rooms}
-
-    today_checkouts = _db_query(
-        "SELECT COUNT(*) AS c FROM bookings "
-        "WHERE date(checkout) = date('now')"
-    )
-    today_guests = _db_query(
-        "SELECT COUNT(*) AS c FROM bookings "
-        "WHERE date(checkin) <= date('now') AND date(checkout) >= date('now')"
-    )
-
-    payload = {
-        "hotel_name": current_app.config.get("HOTEL_NAME", "Гостиница"),
-        "rooms_total": sum(counts.values()),
-        "rooms_free": counts.get("free", 0),
-        "rooms_occupied": counts.get("occupied", 0),
-        "guests_today": today_guests[0]["c"] if today_guests else 0,
-        "checkouts_today": today_checkouts[0]["c"] if today_checkouts else 0,
-    }
-    _atomic_write(root / "snapshots" / f"{MY_CODE}.json", {
-        "service": MY_CODE,
-        "published_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "payload": payload,
-    })
-    _log("snapshot опубликован")
-
-
-# ---------------------------------------------------------------------------
-# Основной цикл
-# ---------------------------------------------------------------------------
-def _loop(app, root: Path) -> None:
-    req_dir = root / "requests" / MY_CODE
-    last_snap = 0.0
-    seen: set[str] = set()
-
-    with app.app_context():
-        for d in (req_dir, root / "responses" / MY_CODE,
-                  root / "snapshots", root / "processed" / MY_CODE,
-                  root / "tmp"):
-            d.mkdir(parents=True, exist_ok=True)
-        _log(f"агент запущен. Слежу за {req_dir}")
-
-    while not _stop.is_set():
-        try:
-            with app.app_context():
-                if req_dir.exists():
-                    for f in req_dir.iterdir():
-                        if (f.is_file() and f.suffix == ".json"
-                                and f.name not in seen):
-                            seen.add(f.name)
-                            try:
-                                _process_request(root, f)
-                            except Exception as e:
-                                _log(f"process: {e}")
-
-                now = time.time()
-                if now - last_snap >= app.config["BUS_SNAPSHOT_INTERVAL"]:
-                    try:
-                        _publish_snapshot(root)
-                    except Exception as e:
-                        _log(f"publish: {e}")
-                    last_snap = now
-        except Exception as e:
-            _log(f"loop: {e}")
-        _stop.wait(1.0)
-
-    _log("агент остановлен")
-
-
-def start(app) -> None:
-    global _thread
-    root = Path(app.config["BUS_ROOT"])
-    if not root.exists():
-        app.logger.warning("[bus] папка шины не найдена: %s", root)
-        return
-    if _thread and _thread.is_alive():
-        return
-    _stop.clear()
-    _thread = threading.Thread(
-        target=_loop, args=(app, root),
-        name="bus-hotel", daemon=True,
-    )
-    _thread.start()
-
-
-def stop() -> None:
-    _stop.set()
-    if _thread:
-        _thread.join(timeout=3)
-```
-
-### B.3. `services/integrations/hotel_client.py` — новый файл
-
-Отправка запроса в ресторан на бронь стола + ожидание ответа.
-
-```python
-"""Клиент ресторана: бронирование стола.
-
-Вызывается из веб-обработчика:  reserve_table(guests=4, ...)
-Синхронно, с таймаутом BUS_REQUEST_TIMEOUT секунд.
-"""
-import json
-import os
-import time
-import uuid
-from datetime import datetime
-from pathlib import Path
-
-from flask import current_app
-
-
-class BusError(Exception):
-    pass
-
-
-def _root() -> Path:
-    return Path(current_app.config["BUS_ROOT"])
-
-
-def _atomic_write(target: Path, data: dict) -> None:
-    tmp_dir = _root() / "tmp"
-    tmp_dir.mkdir(parents=True, exist_ok=True)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    tmp = tmp_dir / f"{target.name}.{uuid.uuid4().hex}.tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, target)
-
-
-def reserve_table(*, guests: int, guest_name: str = "",
-                  time_str: str = "", timeout_sec: float = None) -> dict:
-    """Забронировать стол в ресторане через шину.
-
-    Возвращает payload ответа:
-        {"table_number": 5, "seats": 4, "reservation_id": "RES-..."}
-    Бросает BusError при таймауте или ошибке.
-    """
-    if timeout_sec is None:
-        timeout_sec = current_app.config.get("BUS_REQUEST_TIMEOUT", 30)
-
-    root = _root()
-    rid = f"{datetime.utcnow().strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:6]}"
-
-    req = {
-        "request_id": rid,
-        "from": "hotel",
-        "to": "gurman",
-        "type": "reserve_table",
-        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "payload": {
-            "guests": int(guests),
-            "guest_name": guest_name,
-            "time": time_str or datetime.now().strftime("%Y-%m-%d %H:%M"),
-        },
-    }
-    _atomic_write(root / "requests" / "gurman" / f"{rid}.json", req)
-
-    resp_path = root / "responses" / "hotel" / f"{rid}.json"
-    deadline = time.monotonic() + timeout_sec
-
-    while time.monotonic() < deadline:
-        if resp_path.exists():
-            try:
-                with open(resp_path, "r", encoding="utf-8") as f:
-                    resp = json.load(f)
-            except (json.JSONDecodeError, OSError):
-                time.sleep(0.3)
-                continue
-
-            # Аудит: в processed/
-            proc = root / "processed" / "hotel"
-            proc.mkdir(parents=True, exist_ok=True)
-            try:
-                os.replace(resp_path, proc / resp_path.name)
-            except OSError:
-                pass
-
-            if resp.get("status") == "error":
-                raise BusError(
-                    resp.get("payload", {}).get("message", "ошибка ресторана")
-                )
-            return resp.get("payload") or {}
-
-        time.sleep(0.5)
-
-    raise BusError(f"Ресторан не ответил за {timeout_sec} с (id={rid})")
-
-
-def get_restaurant_snapshot() -> dict | None:
-    """Читать снимок ресторана (свободные столы и т.д.)."""
-    path = _root() / "snapshots" / "gurman.json"
-    if not path.exists():
-        return None
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except (json.JSONDecodeError, OSError):
-        return None
-```
-
-### B.4. `app.py` (у гостиницы) — запуск агента
-
-```python
-from services.integrations import hotel_agent
-
-if __name__ == "__main__":
-    debug = os.environ.get("DEBUG", "0") == "1"
-    is_child = os.environ.get("WERKZEUG_RUN_MAIN") == "true"
-    if not debug or is_child:
-        hotel_agent.start(app)
-    try:
-        app.run(host="0.0.0.0", port=8004, debug=debug,
-                use_reloader=debug)
-    finally:
-        hotel_agent.stop()
-```
-
-⚠️ Порт `8004` — условный. Пусть сокурсник выберет свой свободный (например, 8001, 8002, 8003 — по договорённости). Для шины порт **не важен**, важно чтобы веб-приложение работало.
-
-### B.5. Использование в веб-обработчике
-
-Например, кнопка «Забронировать стол в ресторане» на странице гостя:
-
-```python
-from flask import flash, redirect, render_template, url_for
-from services.integrations.hotel_client import reserve_table, BusError
-
-@app.route("/guest/<int:guest_id>/reserve-restaurant", methods=("POST",))
-def reserve_restaurant(guest_id):
-    guests = int(request.form.get("guests", 2))
-    try:
-        result = reserve_table(
-            guests=guests,
-            guest_name=f"Гость #{guest_id}",
-            time_str=request.form.get("time", ""),
-        )
-        flash(
-            f"Стол №{result['table_number']} "
-            f"забронирован (id {result['reservation_id']})",
-            "success",
-        )
-    except BusError as e:
-        flash(f"Не удалось забронировать: {e}", "error")
-    return redirect(url_for("guest_detail", guest_id=guest_id))
-```
-
-### B.6. Виджет «Свободно в ресторане»
-
-На дашборде гостиницы:
-
-```python
-from services.integrations.hotel_client import get_restaurant_snapshot
-
-@app.context_processor
-def inject_restaurant():
-    snap = get_restaurant_snapshot()
-    return {
-        "restaurant_snapshot": (snap or {}).get("payload"),
-        "restaurant_published_at": (snap or {}).get("published_at"),
-    }
-```
-
-В шаблоне:
-
-```html
-{% if restaurant_snapshot %}
-<div class="card">
-    <h3>Ресторан «Гурман»</h3>
-    <p>Свободных столов: <b>{{ restaurant_snapshot.tables.free }}</b>
-       из {{ restaurant_snapshot.tables.total }}</p>
-    <p class="text-muted">Обновлено: {{ restaurant_published_at }}</p>
-</div>
-{% endif %}
-```
-## Итог: что нужно сокурснику сделать
-
-**Если на Flask:**
-1. Добавить `BUS_ROOT` в `config.py`.
-2. Создать `services/integrations/hotel_agent.py`, `services/integrations/hotel_client.py`.
-3. В `app.py` — `hotel_agent.start(app)` в `__main__`.
-4. На странице гостя — кнопку «Забронировать стол в ресторане», вызывающую `reserve_table(...)`.
-5. На дашборде — виджет со снимком ресторана.
-6. Запустить `py app.py` — агент работает в фоне.
-
-**Если не на Flask:**
-1. Создать `agent.py` (раздел C).
-2. Запустить `py agent.py` в отдельном окне.
-3. В своём коде использовать `reserve_table(...)` из раздела D для брони.
-4. Читать `get_restaurant_snapshot()` для виджета.
-
-**Проверка:**
-- `exchange/snapshots/hotel.json` появился → сервер работает.
-- Через `/integrations` у тебя `ping` и `guest_lookup` возвращают ответ → сервер работает.
-- Вызов `reserve_table(...)` из кода возвращает `table_number` → клиент работает.
-- Стол в ресторане стал `reserved` → интеграция end-to-end.
-
-Если после этого гостиница не может достучаться до ресторана — покажи мне строку из их лога (`!! ...`), найду причину.
+То же самое с бронированием.
